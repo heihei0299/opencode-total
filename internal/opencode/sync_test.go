@@ -136,7 +136,7 @@ func TestStorageReadsLegacyData(t *testing.T) {
 	if err := os.WriteFile(storage.costsPath(), []byte(`{"entries":{"2026-09":{"usage":[],"keys":[]}}}`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(storage.historyPath(), []byte(`{"records":[{"id":"usg_legacy","timeCreated":"2026-09-01T00:00:00Z","model":"legacy-model","provider":"legacy-provider"}]}`), 0644); err != nil {
+	if err := os.WriteFile(storage.historyPath(), []byte(`{"records":[{"id":"usg_legacy","timeCreated":"2026-09-01T00:00:00Z"}]}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 	costs, err := storage.GetCosts(2026, 9)
@@ -146,6 +146,100 @@ func TestStorageReadsLegacyData(t *testing.T) {
 	history, err := storage.LoadHistory()
 	if err != nil || len(history.Records) != 1 || history.Records[0].ID != "usg_legacy" {
 		t.Fatalf("legacy history = %+v, err = %v", history, err)
+	}
+	result, err := storage.Sync(fakeUsageClient{
+		0: {{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z", Model: "new-model", Provider: "new-provider"}},
+		1: {},
+	}, SyncOptions{WorkspaceID: "wrk_test"})
+	if err != nil || result.Status != SyncComplete {
+		t.Fatalf("legacy history sync = %+v, err = %v", result, err)
+	}
+	history, err = storage.LoadHistory()
+	if err != nil || len(history.Records) != 2 || history.Records[0].ID != "usg_new" || history.Records[1].ID != "usg_legacy" {
+		t.Fatalf("merged legacy history = %+v, err = %v", history, err)
+	}
+}
+
+func TestStorageSyncRejectsInvalidFetchedRecordBeforeWrite(t *testing.T) {
+	storage := NewStorage(t.TempDir())
+	old := UsageRecord{ID: "usg_old", TimeCreated: "2026-09-01T00:00:00Z", Model: "old-model", Provider: "old-provider"}
+	if err := storage.SaveHistory([]UsageRecord{old}, &old.TimeCreated); err != nil {
+		t.Fatal(err)
+	}
+	beforeHistory, err := os.ReadFile(storage.historyPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeCSV, err := os.ReadFile(storage.csvPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := storage.Sync(fakeUsageClient{
+		0: {{ID: "usg_invalid", TimeCreated: "2026-09-02T00:00:00Z", Model: "new-model"}},
+		1: {},
+	}, SyncOptions{WorkspaceID: "wrk_test"})
+	if err == nil || result.Status != SyncFailed {
+		t.Fatalf("invalid fetched record = %+v, err = %v", result, err)
+	}
+	if result.Pages != 2 || result.LastSyncedTime != old.TimeCreated || result.Added != 0 || result.Updated != 0 {
+		t.Fatalf("invalid fetched record progress = %+v", result)
+	}
+	afterHistory, err := os.ReadFile(storage.historyPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterHistory) != string(beforeHistory) {
+		t.Fatal("invalid fetched record changed history.json")
+	}
+	afterCSV, err := os.ReadFile(storage.csvPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterCSV) != string(beforeCSV) {
+		t.Fatal("invalid fetched record changed history.csv")
+	}
+}
+
+type finalHistoryReadFailureEnrichment struct {
+	path  string
+	calls int
+}
+
+func (enrichment *finalHistoryReadFailureEnrichment) MarshalJSON() ([]byte, error) {
+	enrichment.calls++
+	if enrichment.calls == 2 {
+		if err := os.Remove(enrichment.path); err != nil {
+			return nil, err
+		}
+		if err := os.Mkdir(enrichment.path, 0755); err != nil {
+			return nil, err
+		}
+	}
+	return []byte("null"), nil
+}
+
+func TestStorageSyncReportsProgressWhenFinalHistoryReadFails(t *testing.T) {
+	dataDir := t.TempDir()
+	storage := NewStorage(dataDir)
+	old := UsageRecord{ID: "usg_old", TimeCreated: "2026-09-01T00:00:00Z", Model: "old-model", Provider: "old-provider"}
+	if err := storage.SaveHistory([]UsageRecord{old}, &old.TimeCreated); err != nil {
+		t.Fatal(err)
+	}
+	enrichment := &finalHistoryReadFailureEnrichment{path: storage.historyPath()}
+
+	result, err := storage.Sync(fakeUsageClient{
+		0: {{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z", Model: "new-model", Provider: "new-provider", Enrichment: enrichment}},
+		1: {},
+	}, SyncOptions{WorkspaceID: "wrk_test"})
+	if err == nil || result.Status != SyncFailed {
+		t.Fatalf("final history read failure = %+v, err = %v", result, err)
+	}
+	if result.Pages != 2 || result.LastSyncedTime != old.TimeCreated || result.Added != 0 || result.Updated != 0 {
+		t.Fatalf("final history read failure progress = %+v", result)
+	}
+	if enrichment.calls != 2 {
+		t.Fatalf("history enrichment marshal calls = %d, want 2", enrichment.calls)
 	}
 }
 

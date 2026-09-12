@@ -265,9 +265,6 @@ func validateStoredHistoryRecords(records []UsageRecord) error {
 		if strings.TrimSpace(record.TimeCreated) == "" {
 			return fmt.Errorf("历史记录 %s 缺少 timeCreated", record.ID)
 		}
-		if strings.TrimSpace(record.Model) == "" || strings.TrimSpace(record.Provider) == "" {
-			return fmt.Errorf("历史记录 %s 缺少 model 或 provider", record.ID)
-		}
 	}
 	return nil
 }
@@ -281,10 +278,13 @@ func (s *Storage) SaveHistory(records []UsageRecord, lastSyncedTime *string) err
 }
 
 func (s *Storage) saveHistory(records []UsageRecord, lastSyncedTime *string) (historySaveResult, error) {
+	ordered := append([]UsageRecord(nil), records...)
+	if err := validateStoredHistoryRecords(ordered); err != nil {
+		return historySaveResult{}, err
+	}
 	if err := s.EnsureDataDir(); err != nil {
 		return historySaveResult{}, err
 	}
-	ordered := append([]UsageRecord(nil), records...)
 	sortUsage(ordered)
 	history := HistoryFile{
 		Records:        ordered,
@@ -310,6 +310,9 @@ func (s *Storage) MergeHistory(records []UsageRecord) (int, error) {
 }
 
 func (s *Storage) mergeHistory(records []UsageRecord) (mergeHistoryResult, error) {
+	if _, err := validateUsageRecords(records); err != nil {
+		return mergeHistoryResult{}, err
+	}
 	if err := s.EnsureDataDir(); err != nil {
 		return mergeHistoryResult{}, err
 	}
@@ -584,7 +587,7 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 	}
 	after, err := s.LoadHistory()
 	if err != nil {
-		return failedSyncResult(SyncReasonStorage, err)
+		return failWithProgress(SyncReasonStorage, err)
 	}
 	return SyncResult{
 		Added:          added,
