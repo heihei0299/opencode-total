@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,12 @@ import (
 
 	"github.com/heihei0299/opencode-analyzer/internal/opencode"
 )
+
+type serverRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn serverRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
 
 func TestListenAndServeRejectsNonLoopback(t *testing.T) {
 	server := NewServer("", Options{DataDir: t.TempDir()})
@@ -82,6 +89,24 @@ func TestSecondConcurrentLockFailsAndReleaseAllowsNext(t *testing.T) {
 	thirdUnlock()
 }
 
+func TestSyncFailureIncludesFailedStatus(t *testing.T) {
+	t.Setenv("OPENCODE_AUTH", "test-cookie")
+	t.Setenv("OPENCODE_WORKSPACE_ID", "wrk_test")
+	previousTransport := http.DefaultTransport
+	http.DefaultTransport = serverRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader("failed")), Header: make(http.Header)}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = previousTransport })
+
+	handler := NewServer("", Options{DataDir: t.TempDir()}).Handler()
+	request := httptest.NewRequest(http.MethodPost, "/api/opencode/sync", strings.NewReader("{}"))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"status":"failed"`) {
+		t.Fatalf("failed sync = %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestStandaloneHTTPAPIAndWebUI(t *testing.T) {
 	dataDir := t.TempDir()
 	piDir := t.TempDir()
@@ -122,6 +147,9 @@ func TestStandaloneHTTPAPIAndWebUI(t *testing.T) {
 	handler.ServeHTTP(index, httptest.NewRequest(http.MethodGet, "/", nil))
 	if !strings.Contains(index.Body.String(), "OpenCode Analyzer") || !strings.Contains(index.Body.String(), "/api/opencode/history") {
 		t.Fatal("standalone WebUI is missing OpenCode audit markers")
+	}
+	if !strings.Contains(index.Body.String(), "r.status") || !strings.Contains(index.Body.String(), "r.warnings") || !strings.Contains(index.Body.String(), "e.status") {
+		t.Fatal("standalone WebUI does not expose sync status warnings")
 	}
 
 	unsupported := httptest.NewRecorder()

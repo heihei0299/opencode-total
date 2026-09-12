@@ -23,12 +23,12 @@ func Run(options Options) (opencode.SyncResult, error) {
 		DataDir:   options.DataDir,
 	})
 	if err != nil {
-		return opencode.SyncResult{}, err
+		return opencode.SyncResult{Status: opencode.SyncFailed}, err
 	}
 	storage := opencode.NewStorage(creds.DataDir)
 	unlock, err := storage.Lock()
 	if err != nil {
-		return opencode.SyncResult{}, err
+		return opencode.SyncResult{Status: opencode.SyncFailed}, err
 	}
 	defer unlock()
 
@@ -37,36 +37,44 @@ func Run(options Options) (opencode.SyncResult, error) {
 	if workspace == "" {
 		workspaces, err := client.GetWorkspaces()
 		if err != nil {
-			return opencode.SyncResult{}, err
+			return opencode.SyncResult{Status: opencode.SyncFailed}, err
 		}
 		if len(workspaces) == 0 {
-			return opencode.SyncResult{}, fmt.Errorf("无法自动发现工作区，请传入 --workspace 或设置 OPENCODE_WORKSPACE_ID")
+			return opencode.SyncResult{Status: opencode.SyncFailed}, fmt.Errorf("无法自动发现工作区，请传入 --workspace 或设置 OPENCODE_WORKSPACE_ID")
 		}
 		if len(workspaces) > 1 {
-			return opencode.SyncResult{}, fmt.Errorf("检测到多个工作区，请传入 --workspace 或设置 OPENCODE_WORKSPACE_ID")
+			return opencode.SyncResult{Status: opencode.SyncFailed}, fmt.Errorf("检测到多个工作区，请传入 --workspace 或设置 OPENCODE_WORKSPACE_ID")
 		}
 		workspace = workspaces[0].ID
 		if workspace == "" {
 			workspace = workspaces[0].WorkspaceID
 		}
 		if workspace == "" {
-			return opencode.SyncResult{}, fmt.Errorf("工作区 ID 为空，无法同步")
+			return opencode.SyncResult{Status: opencode.SyncFailed}, fmt.Errorf("工作区 ID 为空，无法同步")
 		}
 	}
 
 	now := time.Now()
-	if costs, err := client.GetMonthlyCosts(workspace, now.Year(), int(now.Month())); err == nil && costs != nil {
-		if err := storage.SaveCosts(now.Year(), int(now.Month()), *costs); err != nil {
-			return opencode.SyncResult{}, err
-		}
-	}
 	result, err := storage.Sync(client, opencode.SyncOptions{
 		WorkspaceID: workspace,
 		Full:        options.Full,
 		Limit:       options.Limit,
 	})
 	if err != nil {
-		return opencode.SyncResult{}, err
+		result.Status = opencode.SyncFailed
+		return result, err
+	}
+
+	costs, costErr := client.GetMonthlyCosts(workspace, now.Year(), int(now.Month()))
+	if costErr != nil {
+		result.Status = opencode.SyncPartial
+		result.Warnings = append(result.Warnings, fmt.Sprintf("月度成本未更新: %v", costErr))
+	} else if costs == nil {
+		result.Status = opencode.SyncPartial
+		result.Warnings = append(result.Warnings, "月度成本未更新: OpenCode 未返回数据")
+	} else if err := storage.SaveCosts(now.Year(), int(now.Month()), *costs); err != nil {
+		result.Status = opencode.SyncPartial
+		result.Warnings = append(result.Warnings, fmt.Sprintf("月度成本未更新: %v", err))
 	}
 	return result, nil
 }

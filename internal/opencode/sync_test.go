@@ -3,6 +3,8 @@ package opencode
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -38,8 +40,12 @@ func TestStorageSyncPreservesSnapshotOnLaterPageError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := storage.Sync(laterPageErrorClient{}, SyncOptions{WorkspaceID: "wrk_test"}); err == nil {
+	result, err := storage.Sync(laterPageErrorClient{}, SyncOptions{WorkspaceID: "wrk_test"})
+	if err == nil {
 		t.Fatal("later-page errors must fail the sync")
+	}
+	if result.Status != SyncFailed {
+		t.Fatalf("later-page error status = %q, want %q", result.Status, SyncFailed)
 	}
 	history, err := storage.LoadHistory()
 	if err != nil {
@@ -65,6 +71,140 @@ func TestStorageSyncRejectsInternalPageCap(t *testing.T) {
 	}
 	if len(history.Records) != 0 || pointerValue(history.LastSyncedTime) != "" {
 		t.Fatalf("internal cap changed history: %+v", history)
+	}
+}
+
+func TestStorageSyncFailsClosedForCorruptHistory(t *testing.T) {
+	dataDir := t.TempDir()
+	path := filepath.Join(dataDir, "history.json")
+	original := []byte("not valid json\n")
+	if err := os.WriteFile(path, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+	storage := NewStorage(dataDir)
+	result, err := storage.Sync(fakeUsageClient{0: {}}, SyncOptions{WorkspaceID: "wrk_test"})
+	if err == nil {
+		t.Fatal("corrupt history must fail closed")
+	}
+	if result.Status != SyncFailed {
+		t.Fatalf("corrupt history status = %q, want %q", result.Status, SyncFailed)
+	}
+	actual, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(actual) != string(original) {
+		t.Fatalf("corrupt history was changed: %q", actual)
+	}
+}
+
+func TestStorageReadsLegacyData(t *testing.T) {
+	dataDir := t.TempDir()
+	storage := NewStorage(dataDir)
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(storage.costsPath(), []byte(`{"entries":{"2026-09":{"usage":[],"keys":[]}}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(storage.historyPath(), []byte(`{"records":[{"id":"usg_legacy"}]}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	costs, err := storage.GetCosts(2026, 9)
+	if err != nil || costs == nil {
+		t.Fatalf("legacy costs = %+v, err = %v", costs, err)
+	}
+	history, err := storage.LoadHistory()
+	if err != nil || len(history.Records) != 1 || history.Records[0].ID != "usg_legacy" {
+		t.Fatalf("legacy history = %+v, err = %v", history, err)
+	}
+}
+
+func TestStorageSyncPreservesHistoryWhenJSONWriteFails(t *testing.T) {
+	dataDir := t.TempDir()
+	storage := NewStorage(dataDir)
+	old := UsageRecord{ID: "usg_old", TimeCreated: "2026-09-01T00:00:00Z"}
+	if err := storage.SaveHistory([]UsageRecord{old}, &old.TimeCreated); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dataDir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	probe, probeErr := os.CreateTemp(dataDir, "permission-probe")
+	if probeErr == nil {
+		_ = probe.Close()
+		_ = os.Remove(probe.Name())
+		_ = os.Chmod(dataDir, 0755)
+		t.Skip("filesystem permissions do not prevent writes")
+	}
+	defer os.Chmod(dataDir, 0755)
+
+	result, err := storage.Sync(fakeUsageClient{
+		0: {{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z"}},
+		1: {},
+	}, SyncOptions{WorkspaceID: "wrk_test"})
+	if err == nil || result.Status != SyncFailed {
+		t.Fatalf("JSON write failure = %+v, err = %v", result, err)
+	}
+	data, err := os.ReadFile(filepath.Join(dataDir, "history.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), old.ID) || strings.Contains(string(data), "usg_new") {
+		t.Fatalf("history after JSON write failure = %s", data)
+	}
+}
+
+func TestStorageSyncKeepsHistoryWhenCSVExportFails(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dataDir, "history.csv"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	storage := NewStorage(dataDir)
+	result, err := storage.Sync(fakeUsageClient{
+		0: {{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z"}},
+		1: {},
+	}, SyncOptions{WorkspaceID: "wrk_test"})
+	if err != nil {
+		t.Fatalf("CSV failure should be partial, got %v", err)
+	}
+	if len(result.Warnings) == 0 {
+		t.Fatal("CSV failure must include a warning")
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil || !strings.Contains(string(encoded), `"status":"partial"`) {
+		t.Fatalf("partial result = %s, err = %v", encoded, err)
+	}
+	history, err := storage.LoadHistory()
+	if err != nil || len(history.Records) != 1 || history.Records[0].ID != "usg_new" {
+		t.Fatalf("history after CSV failure = %+v, err = %v", history, err)
+	}
+}
+
+func TestStorageRebuildsCSVOnLaterSync(t *testing.T) {
+	dataDir := t.TempDir()
+	csvPath := filepath.Join(dataDir, "history.csv")
+	if err := os.Mkdir(csvPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	storage := NewStorage(dataDir)
+	first, err := storage.Sync(fakeUsageClient{
+		0: {{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z"}},
+		1: {},
+	}, SyncOptions{WorkspaceID: "wrk_test"})
+	if err != nil || first.Status != SyncPartial {
+		t.Fatalf("first sync = %+v, err = %v", first, err)
+	}
+	if err := os.Remove(csvPath); err != nil {
+		t.Fatal(err)
+	}
+	second, err := storage.Sync(fakeUsageClient{0: {}}, SyncOptions{WorkspaceID: "wrk_test"})
+	if err != nil || second.Status != SyncComplete {
+		t.Fatalf("repair sync = %+v, err = %v", second, err)
+	}
+	data, err := os.ReadFile(csvPath)
+	if err != nil || !strings.Contains(string(data), "usg_new") {
+		t.Fatalf("rebuilt CSV = %q, err = %v", data, err)
 	}
 }
 

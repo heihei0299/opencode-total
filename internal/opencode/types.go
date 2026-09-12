@@ -52,12 +52,22 @@ type SyncOptions struct {
 	Limit       int    `json:"limit,omitempty"`
 }
 
+type SyncStatus string
+
+const (
+	SyncComplete SyncStatus = "complete"
+	SyncPartial  SyncStatus = "partial"
+	SyncFailed   SyncStatus = "failed"
+)
+
 type SyncResult struct {
-	Added          int    `json:"added"`
-	Updated        int    `json:"updated"`
-	Pages          int    `json:"pages"`
-	ElapsedMs      int64  `json:"elapsedMs"`
-	LastSyncedTime string `json:"lastSyncedTime"`
+	Added          int        `json:"added"`
+	Updated        int        `json:"updated"`
+	Pages          int        `json:"pages"`
+	ElapsedMs      int64      `json:"elapsedMs"`
+	LastSyncedTime string     `json:"lastSyncedTime"`
+	Status         SyncStatus `json:"status"`
+	Warnings       []string   `json:"warnings,omitempty"`
 }
 
 type HistoryFilter struct {

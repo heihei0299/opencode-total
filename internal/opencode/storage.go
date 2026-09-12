@@ -24,6 +24,41 @@ type Storage struct {
 	dataDir string
 }
 
+type historySaveResult struct {
+	csvErr error
+}
+
+type mergeHistoryResult struct {
+	added   int
+	updated int
+	csvErr  error
+}
+
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	file, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tempPath := file.Name()
+	defer func() {
+		_ = file.Close()
+		_ = os.Remove(tempPath)
+	}()
+	if err := file.Chmod(perm); err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
+}
+
 func NewStorage(dataDir string) *Storage {
 	if strings.TrimSpace(dataDir) == "" {
 		dataDir = "data/opencode"
@@ -38,7 +73,7 @@ func (s *Storage) EnsureDataDir() error {
 		return err
 	}
 	if _, err := os.Stat(s.costsPath()); os.IsNotExist(err) {
-		if err := os.WriteFile(s.costsPath(), []byte("{}\n"), 0644); err != nil {
+		if err := writeFileAtomic(s.costsPath(), []byte("{}\n"), 0644); err != nil {
 			return err
 		}
 	}
@@ -48,7 +83,7 @@ func (s *Storage) EnsureDataDir() error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(s.historyPath(), append(data, '\n'), 0644); err != nil {
+		if err := writeFileAtomic(s.historyPath(), append(data, '\n'), 0644); err != nil {
 			return err
 		}
 	}
@@ -121,7 +156,7 @@ func (s *Storage) SaveCosts(year, month int, result CostsResult) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.costsPath(), append(data, '\n'), 0644)
+	return writeFileAtomic(s.costsPath(), append(data, '\n'), 0644)
 }
 
 func (s *Storage) ListCosts() ([]struct {
@@ -180,8 +215,16 @@ func (s *Storage) LoadHistory() (*HistoryFile, error) {
 }
 
 func (s *Storage) SaveHistory(records []UsageRecord, lastSyncedTime *string) error {
-	if err := s.EnsureDataDir(); err != nil {
+	result, err := s.saveHistory(records, lastSyncedTime)
+	if err != nil {
 		return err
+	}
+	return result.csvErr
+}
+
+func (s *Storage) saveHistory(records []UsageRecord, lastSyncedTime *string) (historySaveResult, error) {
+	if err := s.EnsureDataDir(); err != nil {
+		return historySaveResult{}, err
 	}
 	ordered := append([]UsageRecord(nil), records...)
 	sortUsage(ordered)
@@ -192,37 +235,40 @@ func (s *Storage) SaveHistory(records []UsageRecord, lastSyncedTime *string) err
 	}
 	data, err := json.MarshalIndent(history, "", "  ")
 	if err != nil {
-		return err
+		return historySaveResult{}, err
 	}
-	if err := os.WriteFile(s.historyPath(), append(data, '\n'), 0644); err != nil {
-		return err
+	if err := writeFileAtomic(s.historyPath(), append(data, '\n'), 0644); err != nil {
+		return historySaveResult{}, err
 	}
-	return s.ExportCSV(ordered)
+	return historySaveResult{csvErr: s.ExportCSV(ordered)}, nil
 }
 
 func (s *Storage) MergeHistory(records []UsageRecord) (int, error) {
-	added, _, err := s.mergeHistory(records)
-	return added, err
+	result, err := s.mergeHistory(records)
+	if err != nil {
+		return 0, err
+	}
+	return result.added, result.csvErr
 }
 
-func (s *Storage) mergeHistory(records []UsageRecord) (int, int, error) {
+func (s *Storage) mergeHistory(records []UsageRecord) (mergeHistoryResult, error) {
 	if err := s.EnsureDataDir(); err != nil {
-		return 0, 0, err
+		return mergeHistoryResult{}, err
 	}
 	history, err := s.LoadHistory()
 	if err != nil {
-		return 0, 0, err
+		return mergeHistoryResult{}, err
 	}
 	byID := make(map[string]UsageRecord, len(history.Records)+len(records))
 	for _, record := range history.Records {
 		byID[record.ID] = record
 	}
-	added, updated := 0, 0
+	result := mergeHistoryResult{}
 	for _, record := range records {
 		if existing, exists := byID[record.ID]; !exists {
-			added++
+			result.added++
 		} else if !reflect.DeepEqual(existing, record) {
-			updated++
+			result.updated++
 		}
 		byID[record.ID] = record
 	}
@@ -238,10 +284,12 @@ func (s *Storage) mergeHistory(records []UsageRecord) (int, int, error) {
 	} else {
 		last = history.LastSyncedTime
 	}
-	if err := s.SaveHistory(merged, last); err != nil {
-		return 0, 0, err
+	saved, err := s.saveHistory(merged, last)
+	if err != nil {
+		return mergeHistoryResult{}, err
 	}
-	return added, updated, nil
+	result.csvErr = saved.csvErr
+	return result, nil
 }
 
 func sortUsage(records []UsageRecord) {
@@ -321,7 +369,7 @@ func (s *Storage) ExportCSV(records []UsageRecord) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.csvPath(), data, 0644)
+	return writeFileAtomic(s.csvPath(), data, 0644)
 }
 
 func (s *Storage) GetHistory(filter HistoryFilter, page, size int) ([]UsageRecord, int, error) {
@@ -375,7 +423,7 @@ func (s *Storage) Clear() error {
 	if err := s.SaveHistory([]UsageRecord{}, nil); err != nil {
 		return err
 	}
-	return os.WriteFile(s.costsPath(), []byte("{}\n"), 0644)
+	return writeFileAtomic(s.costsPath(), []byte("{}\n"), 0644)
 }
 
 func (s *Storage) Reset() error { return s.Clear() }
@@ -386,20 +434,20 @@ type UsageClient interface {
 
 func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, error) {
 	if strings.TrimSpace(options.WorkspaceID) == "" {
-		return SyncResult{}, fmt.Errorf("sync 需要 workspaceId")
+		return SyncResult{Status: SyncFailed}, fmt.Errorf("sync 需要 workspaceId")
 	}
 	if client == nil {
-		return SyncResult{}, fmt.Errorf("sync 需要提供 OpenCode client")
+		return SyncResult{Status: SyncFailed}, fmt.Errorf("sync 需要提供 OpenCode client")
 	}
 	if options.Limit < 0 {
-		return SyncResult{}, fmt.Errorf("无效 limit: %d（需为非负整数）", options.Limit)
+		return SyncResult{Status: SyncFailed}, fmt.Errorf("无效 limit: %d（需为非负整数）", options.Limit)
 	}
 	if err := s.EnsureDataDir(); err != nil {
-		return SyncResult{}, err
+		return SyncResult{Status: SyncFailed}, err
 	}
 	history, err := s.LoadHistory()
 	if err != nil {
-		return SyncResult{}, err
+		return SyncResult{Status: SyncFailed}, err
 	}
 	existing := make(map[string]bool, len(history.Records))
 	for _, record := range history.Records {
@@ -419,7 +467,7 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 		batch, err := client.GetUsageHistory(options.WorkspaceID, page)
 		pages++
 		if err != nil {
-			return SyncResult{}, err
+			return SyncResult{Status: SyncFailed}, err
 		}
 		if len(batch) == 0 {
 			completed = true
@@ -450,20 +498,29 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 		collected = append(collected, batch...)
 	}
 	if !completed {
-		return SyncResult{}, fmt.Errorf("sync 未完成：达到页数上限前未遇到结束位置")
+		return SyncResult{Status: SyncFailed}, fmt.Errorf("sync 未完成：达到页数上限前未遇到结束位置")
 	}
 	added, updated := 0, 0
+	status := SyncComplete
+	warnings := []string{}
 	if len(collected) > 0 {
-		added, updated, err = s.mergeHistory(collected)
-	} else {
-		err = s.ExportCSV(history.Records)
-	}
-	if err != nil {
-		return SyncResult{}, err
+		merged, mergeErr := s.mergeHistory(collected)
+		if mergeErr != nil {
+			return SyncResult{Status: SyncFailed}, mergeErr
+		}
+		added = merged.added
+		updated = merged.updated
+		if merged.csvErr != nil {
+			status = SyncPartial
+			warnings = append(warnings, fmt.Sprintf("派生 CSV 未更新: %v", merged.csvErr))
+		}
+	} else if csvErr := s.ExportCSV(history.Records); csvErr != nil {
+		status = SyncPartial
+		warnings = append(warnings, fmt.Sprintf("派生 CSV 未更新: %v", csvErr))
 	}
 	after, err := s.LoadHistory()
 	if err != nil {
-		return SyncResult{}, err
+		return SyncResult{Status: SyncFailed}, err
 	}
 	return SyncResult{
 		Added:          added,
@@ -471,6 +528,8 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 		Pages:          pages,
 		ElapsedMs:      time.Since(start).Milliseconds(),
 		LastSyncedTime: pointerValue(after.LastSyncedTime),
+		Status:         status,
+		Warnings:       warnings,
 	}, nil
 }
 

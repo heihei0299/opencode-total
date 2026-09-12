@@ -94,9 +94,18 @@ func runSync(args []string) error {
 		Limit:     *limit,
 	})
 	if err != nil {
+		if result.Status == opencode.SyncFailed {
+			fmt.Printf("同步失败: 状态 %s, %v\n", result.Status, err)
+		}
 		return err
 	}
-	fmt.Printf("同步完成: 抓取 %d 页, 新增 %d 条, 耗时 %dms\nlastSyncedTime: %s\n", result.Pages, result.Added, result.ElapsedMs, result.LastSyncedTime)
+	fmt.Printf("同步完成: 抓取 %d 页, 新增 %d 条, 更新 %d 条, 状态 %s, 耗时 %dms\nlastSyncedTime: %s\n", result.Pages, result.Added, result.Updated, result.Status, result.ElapsedMs, result.LastSyncedTime)
+	for _, warning := range result.Warnings {
+		fmt.Printf("warning: %s\n", warning)
+	}
+	if result.Status == opencode.SyncPartial {
+		return fmt.Errorf("同步未完整完成")
+	}
 	return nil
 }
 

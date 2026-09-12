@@ -213,7 +213,15 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusConflict
 			errorName = "Conflict"
 		}
-		sendError(w, status, errorName, err.Error())
+		if status == http.StatusConflict {
+			sendError(w, status, errorName, err.Error())
+		} else {
+			sendJSON(w, status, map[string]any{
+				"status": opencode.SyncFailed,
+				"error":  errorName,
+				"detail": err.Error(),
+			})
+		}
 		return
 	}
 	sendJSON(w, http.StatusOK, result)
