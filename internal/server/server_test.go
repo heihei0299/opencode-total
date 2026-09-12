@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -107,6 +108,56 @@ func TestSyncFailureIncludesFailedStatus(t *testing.T) {
 	}
 }
 
+func TestSyncFailureIncludesProgress(t *testing.T) {
+	dataDir := t.TempDir()
+	storage := opencode.NewStorage(dataDir)
+	old := opencode.UsageRecord{
+		ID:          "usg_old",
+		TimeCreated: "2026-09-01T00:00:00Z",
+		Model:       "test-model",
+		Provider:    "test-provider",
+	}
+	if err := storage.SaveHistory([]opencode.UsageRecord{old}, &old.TimeCreated); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENCODE_AUTH", "test-cookie")
+	t.Setenv("OPENCODE_WORKSPACE_ID", "wrk_test")
+	usageCalls := 0
+	previousTransport := http.DefaultTransport
+	http.DefaultTransport = serverRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Header.Get("X-Server-Id") != opencode.FnUsageHistory {
+			return nil, errors.New("unexpected RPC")
+		}
+		usageCalls++
+		if usageCalls == 1 {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(opencode.EncodePayload([]any{[]opencode.UsageRecord{{
+					ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z", Model: "test-model", Provider: "test-provider",
+				}}}))),
+				Header: make(http.Header),
+			}, nil
+		}
+		return &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(strings.NewReader("failed")), Header: make(http.Header)}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = previousTransport })
+
+	handler := NewServer("", Options{DataDir: dataDir}).Handler()
+	request := httptest.NewRequest(http.MethodPost, "/api/opencode/sync", strings.NewReader("{}"))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	body := response.Body.String()
+	if response.Code != http.StatusInternalServerError ||
+		!strings.Contains(body, `"status":"failed"`) ||
+		!strings.Contains(body, `"reason":"http"`) ||
+		!strings.Contains(body, `"pages":2`) ||
+		!strings.Contains(body, `"lastSyncedTime":"`+old.TimeCreated+`"`) ||
+		!strings.Contains(body, `"added":0`) ||
+		!strings.Contains(body, `"updated":0`) {
+		t.Fatalf("failed sync progress = %d %s", response.Code, body)
+	}
+}
+
 func TestSyncRejectsNegativeLimitAsBadRequest(t *testing.T) {
 	handler := NewServer("", Options{DataDir: t.TempDir()}).Handler()
 	request := httptest.NewRequest(http.MethodPost, "/api/opencode/sync", strings.NewReader(`{"limit":-1}`))
@@ -127,7 +178,7 @@ func TestStandaloneHTTPAPIAndWebUI(t *testing.T) {
 		t.Fatal(err)
 	}
 	storage := opencode.NewStorage(dataDir)
-	record := opencode.UsageRecord{ID: "usg_1", TimeCreated: "2026-09-01T02:00:00Z", InputTokens: 20, OutputTokens: 10, Cost: 0.02}
+	record := opencode.UsageRecord{ID: "usg_1", TimeCreated: "2026-09-01T02:00:00Z", Model: "test-model", Provider: "test-provider", InputTokens: 20, OutputTokens: 10, Cost: 0.02}
 	if err := storage.SaveHistory([]opencode.UsageRecord{record}, &record.TimeCreated); err != nil {
 		t.Fatal(err)
 	}

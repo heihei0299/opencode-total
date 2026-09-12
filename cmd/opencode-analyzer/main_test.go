@@ -63,6 +63,56 @@ func TestRunSyncReportsFailedStatus(t *testing.T) {
 	}
 }
 
+func TestRunSyncReportsFailedProgress(t *testing.T) {
+	dataDir := t.TempDir()
+	storage := opencode.NewStorage(dataDir)
+	old := opencode.UsageRecord{
+		ID:          "usg_old",
+		TimeCreated: "2026-09-01T00:00:00Z",
+		Model:       "test-model",
+		Provider:    "test-provider",
+	}
+	if err := storage.SaveHistory([]opencode.UsageRecord{old}, &old.TimeCreated); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENCODE_AUTH", "test-cookie")
+	t.Setenv("OPENCODE_WORKSPACE_ID", "wrk_test")
+	usageCalls := 0
+	previousTransport := http.DefaultTransport
+	http.DefaultTransport = mainRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Header.Get("X-Server-Id") != opencode.FnUsageHistory {
+			return nil, errors.New("unexpected RPC")
+		}
+		usageCalls++
+		if usageCalls == 1 {
+			return mainRPCResponse([]opencode.UsageRecord{{
+				ID:          "usg_new",
+				TimeCreated: "2026-09-02T00:00:00Z",
+				Model:       "test-model",
+				Provider:    "test-provider",
+			}}), nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Body:       io.NopCloser(strings.NewReader("failed")),
+			Header:     make(http.Header),
+		}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = previousTransport })
+
+	output, err := captureMainOutput(func() error {
+		return runSync([]string{"--data-dir", dataDir})
+	})
+	if err == nil {
+		t.Fatalf("failed sync must return an error; output=%s", output)
+	}
+	for _, want := range []string{"同步失败", "2", old.TimeCreated} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("failed sync output = %s, missing %q", output, want)
+		}
+	}
+}
+
 func TestRunSyncReportsPartialAndReturnsError(t *testing.T) {
 	t.Setenv("OPENCODE_AUTH", "test-cookie")
 	t.Setenv("OPENCODE_WORKSPACE_ID", "wrk_test")

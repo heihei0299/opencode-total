@@ -244,6 +244,9 @@ func (s *Storage) LoadHistory() (*HistoryFile, error) {
 	if err := json.Unmarshal(data, &history); err != nil {
 		return nil, err
 	}
+	if err := validateStoredHistoryRecords(records); err != nil {
+		return nil, err
+	}
 	history.Records = records
 	if history.Records == nil {
 		history.Records = []UsageRecord{}
@@ -252,6 +255,21 @@ func (s *Storage) LoadHistory() (*HistoryFile, error) {
 		history.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 	return &history, nil
+}
+
+func validateStoredHistoryRecords(records []UsageRecord) error {
+	for index, record := range records {
+		if strings.TrimSpace(record.ID) == "" {
+			return fmt.Errorf("历史记录 %d 缺少 id", index)
+		}
+		if strings.TrimSpace(record.TimeCreated) == "" {
+			return fmt.Errorf("历史记录 %s 缺少 timeCreated", record.ID)
+		}
+		if strings.TrimSpace(record.Model) == "" || strings.TrimSpace(record.Provider) == "" {
+			return fmt.Errorf("历史记录 %s 缺少 model 或 provider", record.ID)
+		}
+	}
+	return nil
 }
 
 func (s *Storage) SaveHistory(records []UsageRecord, lastSyncedTime *string) error {
@@ -496,6 +514,12 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 	last, lastOK := parseTimestamp(pointerValue(history.LastSyncedTime))
 	collected := make([]UsageRecord, 0)
 	pages := 0
+	failWithProgress := func(reason SyncErrorReason, err error) (SyncResult, error) {
+		result, err := failedSyncResult(reason, err)
+		result.Pages = pages
+		result.LastSyncedTime = pointerValue(history.LastSyncedTime)
+		return result, err
+	}
 	completed := false
 	maxPages := options.Limit
 	if maxPages == 0 {
@@ -507,7 +531,7 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 		batch, err := client.GetUsageHistory(options.WorkspaceID, page)
 		pages++
 		if err != nil {
-			return failedSyncResult(SyncReasonRemote, err)
+			return failWithProgress(SyncReasonRemote, err)
 		}
 		if len(batch) == 0 {
 			completed = true
@@ -538,7 +562,7 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 		collected = append(collected, batch...)
 	}
 	if !completed {
-		return failedSyncResult(SyncReasonIncomplete, fmt.Errorf("sync 未完成：达到页数上限前未遇到结束位置"))
+		return failWithProgress(SyncReasonIncomplete, fmt.Errorf("sync 未完成：达到页数上限前未遇到结束位置"))
 	}
 	added, updated := 0, 0
 	status := SyncComplete
@@ -546,7 +570,7 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 	if len(collected) > 0 {
 		merged, mergeErr := s.mergeHistory(collected)
 		if mergeErr != nil {
-			return failedSyncResult(SyncReasonStorage, mergeErr)
+			return failWithProgress(SyncReasonStorage, mergeErr)
 		}
 		added = merged.added
 		updated = merged.updated

@@ -20,6 +20,57 @@ func rpcResponse(value any) *http.Response {
 	}
 }
 
+func TestGetWorkspacesRejectsUnknownEnvelope(t *testing.T) {
+	client := NewClientWithHTTPClient("test-cookie", &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return rpcResponse(map[string]any{"unexpected": []any{}}), nil
+	})})
+	if _, err := client.GetWorkspaces(); err == nil {
+		t.Fatal("unknown workspace envelope must fail")
+	}
+}
+
+func TestGetWorkspacesAcceptsKnownWrappersAndEmptyList(t *testing.T) {
+	responses := []struct {
+		value any
+		want  int
+	}{
+		{value: []WorkspaceInfo{}, want: 0},
+		{value: map[string]any{"workspaces": []any{}}, want: 0},
+		{value: map[string]any{"data": []any{map[string]any{"id": "wrk_data", "name": "Data"}}}, want: 1},
+	}
+	for _, expected := range responses {
+		client := NewClientWithHTTPClient("test-cookie", &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+			return rpcResponse(expected.value), nil
+		})})
+		workspaces, err := client.GetWorkspaces()
+		if err != nil {
+			t.Fatalf("known workspace wrapper failed: %v", err)
+		}
+		if len(workspaces) != expected.want {
+			t.Fatalf("workspace response = %+v, want %d entries", workspaces, expected.want)
+		}
+	}
+}
+
+func TestUsageHistoryAcceptsDirectArrayAndKnownWrappers(t *testing.T) {
+	record := UsageRecord{ID: "usg_valid", TimeCreated: "2026-09-01T00:00:00Z", Model: "m1", Provider: "p1"}
+	responses := []any{
+		[]UsageRecord{record},
+		map[string]any{"data": []UsageRecord{record}},
+		map[string]any{"records": []UsageRecord{record}},
+		map[string]any{"usage": []UsageRecord{record}},
+	}
+	for _, response := range responses {
+		client := NewClientWithHTTPClient("test-cookie", &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+			return rpcResponse(response), nil
+		})})
+		records, err := client.GetUsageHistory("wrk_test", 1)
+		if err != nil || len(records) != 1 || records[0].ID != record.ID {
+			t.Fatalf("usage response = %+v, err = %v", records, err)
+		}
+	}
+}
+
 func TestClientRPCAndPagination(t *testing.T) {
 	client := NewClientWithHTTPClient("test-cookie", &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if !strings.Contains(request.Header.Get("Cookie"), "auth=test-cookie") {
@@ -40,7 +91,11 @@ func TestClientRPCAndPagination(t *testing.T) {
 			if !strings.Contains(request.URL.Query().Get("args"), "0") {
 				t.Fatalf("usage args = %q", request.URL.Query().Get("args"))
 			}
-			return rpcResponse(map[string]any{"records": []any{map[string]any{"id": "usg_1", "workspaceID": "wrk_test", "timeCreated": "2026-09-01T00:00:00Z", "model": "test-model", "provider": "test-provider"}, map[string]any{"id": "ignored"}}}), nil
+			return rpcResponse(map[string]any{"records": []any{
+				map[string]any{"id": "usg_1", "workspaceID": "wrk_test", "timeCreated": "2026-09-01T00:00:00Z", "model": "test-model", "provider": "test-provider"},
+				map[string]any{"id": "ignored"},
+				map[string]any{"id": 123},
+			}}), nil
 		default:
 			t.Fatalf("unexpected function id: %s", request.Header.Get("X-Server-Id"))
 			return nil, nil
@@ -168,6 +223,30 @@ func TestUsageHistoryRejectsIncompleteUsageRecord(t *testing.T) {
 	})})
 	if _, err := client.GetUsageHistory("wrk_test", 1); err == nil {
 		t.Fatal("incomplete usage records must fail")
+	}
+}
+
+func TestUsageHistoryRejectsUsageRecordMissingTimeCreated(t *testing.T) {
+	client := NewClientWithHTTPClient("test-cookie", &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return rpcResponse(map[string]any{"records": []map[string]any{{"id": "usg_missing_time", "model": "m1", "provider": "p1"}}}), nil
+	})})
+	if _, err := client.GetUsageHistory("wrk_test", 1); err == nil {
+		t.Fatal("usage records without timeCreated must fail")
+	}
+}
+
+func TestUsageHistoryRejectsUsageLikeRecordWithInvalidID(t *testing.T) {
+	client := NewClientWithHTTPClient("test-cookie", &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return rpcResponse(map[string]any{"records": []map[string]any{{
+			"id":          "invalid-id",
+			"timeCreated": "2026-09-01T00:00:00Z",
+			"model":       "m1",
+			"provider":    "p1",
+			"inputTokens": 1,
+		}}}), nil
+	})})
+	if _, err := client.GetUsageHistory("wrk_test", 1); err == nil {
+		t.Fatal("usage-like records with invalid IDs must fail")
 	}
 }
 

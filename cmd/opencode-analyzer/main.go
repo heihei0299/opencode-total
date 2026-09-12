@@ -95,7 +95,7 @@ func runSync(args []string) error {
 	})
 	if err != nil {
 		if result.Status == opencode.SyncFailed {
-			fmt.Printf("同步失败: 状态 %s, 原因 %s, %v\n", result.Status, result.Reason, err)
+			fmt.Printf("同步失败: 状态 %s, 原因 %s, 抓取 %d 页, lastSyncedTime: %s, %v\n", result.Status, result.Reason, result.Pages, result.LastSyncedTime, err)
 		}
 		return err
 	}

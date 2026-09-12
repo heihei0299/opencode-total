@@ -21,7 +21,7 @@ func (laterPageErrorClient) GetUsageHistory(_ string, page int) ([]UsageRecord, 
 	if page == 1 {
 		return nil, errors.New("later page failed")
 	}
-	return []UsageRecord{{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z"}}, nil
+	return []UsageRecord{{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z", Model: "test-model", Provider: "test-provider"}}, nil
 }
 
 type endlessUsageClient struct {
@@ -30,13 +30,21 @@ type endlessUsageClient struct {
 
 func (client *endlessUsageClient) GetUsageHistory(_ string, _ int) ([]UsageRecord, error) {
 	client.calls++
-	return []UsageRecord{{ID: "usg_page"}}, nil
+	return []UsageRecord{{ID: "usg_page", TimeCreated: "2026-09-01T00:00:00Z", Model: "test-model", Provider: "test-provider"}}, nil
 }
 
 func TestStorageSyncPreservesSnapshotOnLaterPageError(t *testing.T) {
 	storage := NewStorage(t.TempDir())
-	old := UsageRecord{ID: "usg_old", TimeCreated: "2026-09-01T00:00:00Z"}
+	old := UsageRecord{ID: "usg_old", TimeCreated: "2026-09-01T00:00:00Z", Model: "test-model", Provider: "test-provider"}
 	if err := storage.SaveHistory([]UsageRecord{old}, &old.TimeCreated); err != nil {
+		t.Fatal(err)
+	}
+	beforeHistory, err := os.ReadFile(storage.historyPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeCSV, err := os.ReadFile(storage.csvPath())
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -46,6 +54,23 @@ func TestStorageSyncPreservesSnapshotOnLaterPageError(t *testing.T) {
 	}
 	if result.Status != SyncFailed {
 		t.Fatalf("later-page error status = %q, want %q", result.Status, SyncFailed)
+	}
+	if result.Pages != 2 || result.LastSyncedTime != old.TimeCreated || result.Added != 0 || result.Updated != 0 {
+		t.Fatalf("later-page error progress = %+v", result)
+	}
+	afterHistory, err := os.ReadFile(storage.historyPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterHistory) != string(beforeHistory) {
+		t.Fatal("later-page error changed history.json")
+	}
+	afterCSV, err := os.ReadFile(storage.csvPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterCSV) != string(beforeCSV) {
+		t.Fatal("later-page error changed history.csv")
 	}
 	history, err := storage.LoadHistory()
 	if err != nil {
@@ -59,8 +84,12 @@ func TestStorageSyncPreservesSnapshotOnLaterPageError(t *testing.T) {
 func TestStorageSyncRejectsInternalPageCap(t *testing.T) {
 	storage := NewStorage(t.TempDir())
 	client := &endlessUsageClient{}
-	if _, err := storage.Sync(client, SyncOptions{WorkspaceID: "wrk_test"}); err == nil {
+	result, err := storage.Sync(client, SyncOptions{WorkspaceID: "wrk_test"})
+	if err == nil {
 		t.Fatal("reaching the internal page cap must fail")
+	}
+	if result.Status != SyncFailed || result.Pages != 200 || result.LastSyncedTime != "" || result.Added != 0 || result.Updated != 0 {
+		t.Fatalf("internal cap progress = %+v", result)
 	}
 	if client.calls != 200 {
 		t.Fatalf("internal cap calls = %d, want 200", client.calls)
@@ -107,7 +136,7 @@ func TestStorageReadsLegacyData(t *testing.T) {
 	if err := os.WriteFile(storage.costsPath(), []byte(`{"entries":{"2026-09":{"usage":[],"keys":[]}}}`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(storage.historyPath(), []byte(`{"records":[{"id":"usg_legacy"}]}`), 0644); err != nil {
+	if err := os.WriteFile(storage.historyPath(), []byte(`{"records":[{"id":"usg_legacy","timeCreated":"2026-09-01T00:00:00Z","model":"legacy-model","provider":"legacy-provider"}]}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 	costs, err := storage.GetCosts(2026, 9)
@@ -123,7 +152,7 @@ func TestStorageReadsLegacyData(t *testing.T) {
 func TestStorageSyncPreservesHistoryWhenJSONWriteFails(t *testing.T) {
 	dataDir := t.TempDir()
 	storage := NewStorage(dataDir)
-	old := UsageRecord{ID: "usg_old", TimeCreated: "2026-09-01T00:00:00Z"}
+	old := UsageRecord{ID: "usg_old", TimeCreated: "2026-09-01T00:00:00Z", Model: "test-model", Provider: "test-provider"}
 	if err := storage.SaveHistory([]UsageRecord{old}, &old.TimeCreated); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +169,7 @@ func TestStorageSyncPreservesHistoryWhenJSONWriteFails(t *testing.T) {
 	defer os.Chmod(dataDir, 0755)
 
 	result, err := storage.Sync(fakeUsageClient{
-		0: {{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z"}},
+		0: {{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z", Model: "test-model", Provider: "test-provider"}},
 		1: {},
 	}, SyncOptions{WorkspaceID: "wrk_test"})
 	if err == nil || result.Status != SyncFailed {
@@ -162,7 +191,7 @@ func TestStorageSyncKeepsHistoryWhenCSVExportFails(t *testing.T) {
 	}
 	storage := NewStorage(dataDir)
 	result, err := storage.Sync(fakeUsageClient{
-		0: {{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z"}},
+		0: {{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z", Model: "test-model", Provider: "test-provider"}},
 		1: {},
 	}, SyncOptions{WorkspaceID: "wrk_test"})
 	if err != nil {
@@ -189,7 +218,7 @@ func TestStorageRebuildsCSVOnLaterSync(t *testing.T) {
 	}
 	storage := NewStorage(dataDir)
 	first, err := storage.Sync(fakeUsageClient{
-		0: {{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z"}},
+		0: {{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z", Model: "test-model", Provider: "test-provider"}},
 		1: {},
 	}, SyncOptions{WorkspaceID: "wrk_test"})
 	if err != nil || first.Status != SyncPartial {
@@ -210,16 +239,41 @@ func TestStorageRebuildsCSVOnLaterSync(t *testing.T) {
 
 func TestStorageSyncRejectsLimitExhaustion(t *testing.T) {
 	storage := NewStorage(t.TempDir())
-	old := UsageRecord{ID: "usg_old", TimeCreated: "2026-09-01T00:00:00Z"}
+	old := UsageRecord{ID: "usg_old", TimeCreated: "2026-09-01T00:00:00Z", Model: "test-model", Provider: "test-provider"}
 	if err := storage.SaveHistory([]UsageRecord{old}, &old.TimeCreated); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := storage.Sync(fakeUsageClient{
+	beforeHistory, err := os.ReadFile(storage.historyPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeCSV, err := os.ReadFile(storage.csvPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := storage.Sync(fakeUsageClient{
 		0: {{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z"}},
 	}, SyncOptions{WorkspaceID: "wrk_test", Limit: 1})
 	if err == nil {
 		t.Fatal("reaching the page limit before an empty page must fail")
+	}
+	if result.Status != SyncFailed || result.Pages != 1 || result.LastSyncedTime != old.TimeCreated || result.Added != 0 || result.Updated != 0 {
+		t.Fatalf("limit exhaustion progress = %+v", result)
+	}
+	afterHistory, err := os.ReadFile(storage.historyPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterHistory) != string(beforeHistory) {
+		t.Fatal("limit exhaustion changed history.json")
+	}
+	afterCSV, err := os.ReadFile(storage.csvPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterCSV) != string(beforeCSV) {
+		t.Fatal("limit exhaustion changed history.csv")
 	}
 	history, err := storage.LoadHistory()
 	if err != nil {
@@ -232,7 +286,7 @@ func TestStorageSyncRejectsLimitExhaustion(t *testing.T) {
 
 func TestStorageSyncUpdatesExistingBoundaryRecord(t *testing.T) {
 	storage := NewStorage(t.TempDir())
-	old := UsageRecord{ID: "usg_old", TimeCreated: "2026-09-01T00:00:00Z", OutputTokens: 1}
+	old := UsageRecord{ID: "usg_old", TimeCreated: "2026-09-01T00:00:00Z", Model: "test-model", Provider: "test-provider", OutputTokens: 1}
 	if err := storage.SaveHistory([]UsageRecord{old}, &old.TimeCreated); err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +294,7 @@ func TestStorageSyncUpdatesExistingBoundaryRecord(t *testing.T) {
 	updated.OutputTokens = 9
 
 	result, err := storage.Sync(fakeUsageClient{
-		0: {{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z"}, updated},
+		0: {{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z", Model: "test-model", Provider: "test-provider"}, updated},
 	}, SyncOptions{WorkspaceID: "wrk_test"})
 	if err != nil {
 		t.Fatal(err)
@@ -267,8 +321,8 @@ func TestStorageSyncUpdatesExistingBoundaryRecord(t *testing.T) {
 func TestStorageSyncFullReachesOlderRecords(t *testing.T) {
 	storage := NewStorage(t.TempDir())
 	result, err := storage.Sync(fakeUsageClient{
-		0: {{ID: "usg_new", TimeCreated: "2026-09-03T00:00:00Z"}},
-		1: {{ID: "usg_old", TimeCreated: "2026-09-02T00:00:00Z"}},
+		0: {{ID: "usg_new", TimeCreated: "2026-09-03T00:00:00Z", Model: "test-model", Provider: "test-provider"}},
+		1: {{ID: "usg_old", TimeCreated: "2026-09-02T00:00:00Z", Model: "test-model", Provider: "test-provider"}},
 		2: {},
 	}, SyncOptions{WorkspaceID: "wrk_test", Full: true})
 	if err != nil {
@@ -285,12 +339,12 @@ func TestStorageSyncFullReachesOlderRecords(t *testing.T) {
 
 func TestStorageSyncUsesCursorAndDeduplicates(t *testing.T) {
 	storage := NewStorage(t.TempDir())
-	old := UsageRecord{ID: "usg_old", TimeCreated: "2026-09-01T00:00:00Z"}
+	old := UsageRecord{ID: "usg_old", TimeCreated: "2026-09-01T00:00:00Z", Model: "test-model", Provider: "test-provider"}
 	if err := storage.SaveHistory([]UsageRecord{old}, &old.TimeCreated); err != nil {
 		t.Fatal(err)
 	}
 	result, err := storage.Sync(fakeUsageClient{
-		0: {{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z"}, old},
+		0: {{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z", Model: "test-model", Provider: "test-provider"}, old},
 		1: {{ID: "usg_unreachable", TimeCreated: "2026-08-31T00:00:00Z"}},
 	}, SyncOptions{WorkspaceID: "wrk_test"})
 	if err != nil {

@@ -37,7 +37,7 @@ func TestRunReportsPartialWhenMonthlyCostsFailAfterHistory(t *testing.T) {
 	dataDir := t.TempDir()
 	storage := opencode.NewStorage(dataDir)
 	now := time.Now()
-	oldCosts := opencode.CostsResult{Usage: []opencode.MonthlyCostItem{{Model: "old", TotalCost: 1}}}
+	oldCosts := opencode.CostsResult{Usage: []opencode.MonthlyCostItem{{Model: "old", TotalCost: 1}}, Keys: []opencode.KeyInfo{}}
 	if err := storage.SaveCosts(now.Year(), int(now.Month()), oldCosts); err != nil {
 		t.Fatal(err)
 	}

@@ -188,25 +188,46 @@ func (c *Client) GetWorkspaces() ([]WorkspaceInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	workspaces, err := decodeWorkspaceList(raw)
+	if err != nil {
+		return nil, NewSyncError(SyncReasonDecode, err)
+	}
+	return workspaces, nil
+}
 
-	bytes, _ := json.Marshal(raw)
-	var list []WorkspaceInfo
-	if err := json.Unmarshal(bytes, &list); err == nil {
+func decodeWorkspaceList(raw any) ([]WorkspaceInfo, error) {
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	text := strings.TrimSpace(string(data))
+	if text == "null" {
+		return nil, fmt.Errorf("workspace 响应不能为 null")
+	}
+	if strings.HasPrefix(text, "[") {
+		var list []WorkspaceInfo
+		if err := json.Unmarshal(data, &list); err != nil {
+			return nil, err
+		}
 		return list, nil
 	}
-	var wrapper struct {
-		Workspaces []WorkspaceInfo `json:"workspaces"`
-		Data       []WorkspaceInfo `json:"data"`
+
+	var wrapper map[string]json.RawMessage
+	if err := json.Unmarshal(data, &wrapper); err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(bytes, &wrapper); err == nil {
-		if wrapper.Workspaces != nil {
-			return wrapper.Workspaces, nil
+	for _, key := range []string{"workspaces", "data"} {
+		value, ok := wrapper[key]
+		if !ok || strings.TrimSpace(string(value)) == "null" {
+			continue
 		}
-		if wrapper.Data != nil {
-			return wrapper.Data, nil
+		var list []WorkspaceInfo
+		if err := json.Unmarshal(value, &list); err != nil {
+			return nil, err
 		}
+		return list, nil
 	}
-	return []WorkspaceInfo{}, nil
+	return nil, fmt.Errorf("无法识别 OpenCode workspace 响应")
 }
 
 func (c *Client) GetMonthlyCosts(workspaceID string, yearMonth ...int) (*CostsResult, error) {
@@ -286,42 +307,85 @@ func (c *Client) GetUsageHistory(workspaceID string, page int) ([]UsageRecord, e
 }
 
 func decodeUsageRecords(raw any) ([]UsageRecord, error) {
-	bytes, err := json.Marshal(raw)
+	data, err := json.Marshal(raw)
 	if err != nil {
 		return nil, err
 	}
-	text := strings.TrimSpace(string(bytes))
+	text := strings.TrimSpace(string(data))
 	if strings.HasPrefix(text, "[") {
-		var records []UsageRecord
-		if err := json.Unmarshal(bytes, &records); err != nil {
-			return nil, err
-		}
-		return validateUsageRecords(records)
+		return decodeUsageRecordArray(data)
 	}
 
 	var wrapper map[string]json.RawMessage
-	if err := json.Unmarshal(bytes, &wrapper); err != nil {
+	if err := json.Unmarshal(data, &wrapper); err != nil {
 		return nil, err
 	}
 	for _, key := range []string{"data", "records", "usage"} {
 		value, ok := wrapper[key]
-		if !ok || string(value) == "null" {
+		if !ok || strings.TrimSpace(string(value)) == "null" {
 			continue
 		}
-		var records []UsageRecord
-		if err := json.Unmarshal(value, &records); err != nil {
-			return nil, err
-		}
-		return validateUsageRecords(records)
+		return decodeUsageRecordArray(value)
 	}
 	return nil, fmt.Errorf("无法识别 OpenCode usage history 响应")
+}
+
+func decodeUsageRecordArray(data []byte) ([]UsageRecord, error) {
+	var items []json.RawMessage
+	if err := json.Unmarshal(data, &items); err != nil {
+		return nil, err
+	}
+	records := make([]UsageRecord, 0, len(items))
+	for _, item := range items {
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(item, &object); err != nil || object == nil {
+			if err == nil {
+				err = fmt.Errorf("usage record 不能为 null")
+			}
+			return nil, err
+		}
+		usageLike := false
+		for _, key := range []string{
+			"workspaceID", "workspaceId", "timeCreated", "timeUpdated", "model", "provider",
+			"inputTokens", "outputTokens", "reasoningTokens", "cacheReadTokens",
+			"cacheWrite5mTokens", "cacheWrite1hTokens", "cost", "keyID", "keyId",
+			"sessionID", "enrichment",
+		} {
+			if _, ok := object[key]; ok {
+				usageLike = true
+				break
+			}
+		}
+		idValue, hasID := object["id"]
+		var id string
+		if hasID {
+			if err := json.Unmarshal(idValue, &id); err != nil {
+				if !usageLike {
+					continue
+				}
+				return nil, fmt.Errorf("usage record id 类型无效")
+			}
+		}
+		if !usageLike && (!hasID || !strings.HasPrefix(id, "usg_")) {
+			continue
+		}
+		if !strings.HasPrefix(id, "usg_") {
+			return nil, fmt.Errorf("usage record %q 的 id 无效", id)
+		}
+		var record UsageRecord
+		if err := json.Unmarshal(item, &record); err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return validateUsageRecords(records)
 }
 
 func validateUsageRecords(records []UsageRecord) ([]UsageRecord, error) {
 	out := make([]UsageRecord, 0, len(records))
 	for _, record := range records {
 		if !strings.HasPrefix(record.ID, "usg_") {
-			continue
+			return nil, fmt.Errorf("usage record %q 的 id 无效", record.ID)
 		}
 		if strings.TrimSpace(record.TimeCreated) == "" {
 			return nil, fmt.Errorf("usage record %s 缺少 timeCreated", record.ID)

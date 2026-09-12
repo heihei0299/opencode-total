@@ -6,6 +6,24 @@ import (
 	"testing"
 )
 
+func TestLoadHistoryRejectsMalformedRecord(t *testing.T) {
+	storage := NewStorage(t.TempDir())
+	original := []byte(`{"records":[{}]}`)
+	if err := os.WriteFile(filepath.Join(storage.DataDir(), "history.json"), original, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.LoadHistory(); err == nil {
+		t.Fatal("malformed stored records must fail closed")
+	}
+	actual, err := os.ReadFile(filepath.Join(storage.DataDir(), "history.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(actual) != string(original) {
+		t.Fatalf("malformed history changed: %q", actual)
+	}
+}
+
 func TestStorageAndFlock(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "opencode-storage-test-*")
 	if err != nil {
@@ -39,9 +57,9 @@ func TestStorageAndFlock(t *testing.T) {
 
 	// 2. 测试 SaveHistory & GetHistory 分页
 	records := []UsageRecord{
-		{ID: "rec1", Model: "gpt-4", TimeCreated: "2026-08-01T10:00:00Z", InputTokens: 100},
-		{ID: "rec2", Model: "deepseek-chat", TimeCreated: "2026-08-01T12:00:00Z", InputTokens: 200},
-		{ID: "rec3", Model: "gpt-4", TimeCreated: "2026-08-01T14:00:00Z", InputTokens: 300},
+		{ID: "rec1", Model: "gpt-4", Provider: "test-provider", TimeCreated: "2026-08-01T10:00:00Z", InputTokens: 100},
+		{ID: "rec2", Model: "deepseek-chat", Provider: "test-provider", TimeCreated: "2026-08-01T12:00:00Z", InputTokens: 200},
+		{ID: "rec3", Model: "gpt-4", Provider: "test-provider", TimeCreated: "2026-08-01T14:00:00Z", InputTokens: 300},
 	}
 	syncTime := "2026-08-01T14:00:00Z"
 	if err := storage.SaveHistory(records, &syncTime); err != nil {
