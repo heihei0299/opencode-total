@@ -34,6 +34,11 @@ type mergeHistoryResult struct {
 	csvErr  error
 }
 
+func failedSyncResult(reason SyncErrorReason, err error) (SyncResult, error) {
+	err = NewSyncError(reason, err)
+	return SyncResult{Status: SyncFailed, Reason: SyncErrorReasonOf(err)}, err
+}
+
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	file, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -434,20 +439,20 @@ type UsageClient interface {
 
 func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, error) {
 	if strings.TrimSpace(options.WorkspaceID) == "" {
-		return SyncResult{Status: SyncFailed}, fmt.Errorf("sync 需要 workspaceId")
+		return failedSyncResult(SyncReasonInvalidInput, fmt.Errorf("sync 需要 workspaceId"))
 	}
 	if client == nil {
-		return SyncResult{Status: SyncFailed}, fmt.Errorf("sync 需要提供 OpenCode client")
+		return failedSyncResult(SyncReasonInvalidInput, fmt.Errorf("sync 需要提供 OpenCode client"))
 	}
 	if options.Limit < 0 {
-		return SyncResult{Status: SyncFailed}, fmt.Errorf("无效 limit: %d（需为非负整数）", options.Limit)
+		return failedSyncResult(SyncReasonInvalidInput, fmt.Errorf("无效 limit: %d（需为非负整数）", options.Limit))
 	}
 	if err := s.EnsureDataDir(); err != nil {
-		return SyncResult{Status: SyncFailed}, err
+		return failedSyncResult(SyncReasonStorage, err)
 	}
 	history, err := s.LoadHistory()
 	if err != nil {
-		return SyncResult{Status: SyncFailed}, err
+		return failedSyncResult(SyncReasonStorage, err)
 	}
 	existing := make(map[string]bool, len(history.Records))
 	for _, record := range history.Records {
@@ -467,7 +472,7 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 		batch, err := client.GetUsageHistory(options.WorkspaceID, page)
 		pages++
 		if err != nil {
-			return SyncResult{Status: SyncFailed}, err
+			return failedSyncResult(SyncReasonRemote, err)
 		}
 		if len(batch) == 0 {
 			completed = true
@@ -498,7 +503,7 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 		collected = append(collected, batch...)
 	}
 	if !completed {
-		return SyncResult{Status: SyncFailed}, fmt.Errorf("sync 未完成：达到页数上限前未遇到结束位置")
+		return failedSyncResult(SyncReasonIncomplete, fmt.Errorf("sync 未完成：达到页数上限前未遇到结束位置"))
 	}
 	added, updated := 0, 0
 	status := SyncComplete
@@ -506,7 +511,7 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 	if len(collected) > 0 {
 		merged, mergeErr := s.mergeHistory(collected)
 		if mergeErr != nil {
-			return SyncResult{Status: SyncFailed}, mergeErr
+			return failedSyncResult(SyncReasonStorage, mergeErr)
 		}
 		added = merged.added
 		updated = merged.updated
@@ -520,7 +525,7 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 	}
 	after, err := s.LoadHistory()
 	if err != nil {
-		return SyncResult{Status: SyncFailed}, err
+		return failedSyncResult(SyncReasonStorage, err)
 	}
 	return SyncResult{
 		Added:          added,

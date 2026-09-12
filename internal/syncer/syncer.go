@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/heihei0299/opencode-analyzer/internal/credentials"
@@ -16,6 +17,11 @@ type Options struct {
 	Limit     int
 }
 
+func failedResult(reason opencode.SyncErrorReason, err error) (opencode.SyncResult, error) {
+	err = opencode.NewSyncError(reason, err)
+	return opencode.SyncResult{Status: opencode.SyncFailed, Reason: opencode.SyncErrorReasonOf(err)}, err
+}
+
 func Run(options Options) (opencode.SyncResult, error) {
 	creds, err := credentials.Load(credentials.Input{
 		Auth:      options.Auth,
@@ -23,12 +29,16 @@ func Run(options Options) (opencode.SyncResult, error) {
 		DataDir:   options.DataDir,
 	})
 	if err != nil {
-		return opencode.SyncResult{Status: opencode.SyncFailed}, err
+		return failedResult(opencode.SyncReasonConfiguration, err)
 	}
 	storage := opencode.NewStorage(creds.DataDir)
 	unlock, err := storage.Lock()
 	if err != nil {
-		return opencode.SyncResult{Status: opencode.SyncFailed}, err
+		reason := opencode.SyncReasonStorage
+		if strings.Contains(err.Error(), "同步进行中") {
+			reason = opencode.SyncReasonConflict
+		}
+		return failedResult(reason, err)
 	}
 	defer unlock()
 
@@ -37,20 +47,20 @@ func Run(options Options) (opencode.SyncResult, error) {
 	if workspace == "" {
 		workspaces, err := client.GetWorkspaces()
 		if err != nil {
-			return opencode.SyncResult{Status: opencode.SyncFailed}, err
+			return failedResult(opencode.SyncReasonRemote, err)
 		}
 		if len(workspaces) == 0 {
-			return opencode.SyncResult{Status: opencode.SyncFailed}, fmt.Errorf("无法自动发现工作区，请传入 --workspace 或设置 OPENCODE_WORKSPACE_ID")
+			return failedResult(opencode.SyncReasonWorkspace, fmt.Errorf("无法自动发现工作区，请传入 --workspace 或设置 OPENCODE_WORKSPACE_ID"))
 		}
 		if len(workspaces) > 1 {
-			return opencode.SyncResult{Status: opencode.SyncFailed}, fmt.Errorf("检测到多个工作区，请传入 --workspace 或设置 OPENCODE_WORKSPACE_ID")
+			return failedResult(opencode.SyncReasonWorkspace, fmt.Errorf("检测到多个工作区，请传入 --workspace 或设置 OPENCODE_WORKSPACE_ID"))
 		}
 		workspace = workspaces[0].ID
 		if workspace == "" {
 			workspace = workspaces[0].WorkspaceID
 		}
 		if workspace == "" {
-			return opencode.SyncResult{Status: opencode.SyncFailed}, fmt.Errorf("工作区 ID 为空，无法同步")
+			return failedResult(opencode.SyncReasonWorkspace, fmt.Errorf("工作区 ID 为空，无法同步"))
 		}
 	}
 
@@ -62,6 +72,9 @@ func Run(options Options) (opencode.SyncResult, error) {
 	})
 	if err != nil {
 		result.Status = opencode.SyncFailed
+		if result.Reason == "" {
+			result.Reason = opencode.SyncErrorReasonOf(err)
+		}
 		return result, err
 	}
 

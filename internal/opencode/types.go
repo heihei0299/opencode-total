@@ -1,5 +1,7 @@
 package opencode
 
+import "errors"
+
 type UsageRecord struct {
 	ID                 string  `json:"id"`
 	WorkspaceID        string  `json:"workspaceID"`
@@ -60,14 +62,61 @@ const (
 	SyncFailed   SyncStatus = "failed"
 )
 
+type SyncErrorReason string
+
+const (
+	SyncReasonConfiguration  SyncErrorReason = "configuration"
+	SyncReasonInvalidInput   SyncErrorReason = "invalid_input"
+	SyncReasonConflict       SyncErrorReason = "conflict"
+	SyncReasonWorkspace      SyncErrorReason = "workspace"
+	SyncReasonRemote         SyncErrorReason = "remote"
+	SyncReasonNetwork        SyncErrorReason = "network"
+	SyncReasonAuthentication SyncErrorReason = "authentication"
+	SyncReasonNotFound       SyncErrorReason = "not_found"
+	SyncReasonServer         SyncErrorReason = "server"
+	SyncReasonHTTP           SyncErrorReason = "http"
+	SyncReasonDecode         SyncErrorReason = "decode"
+	SyncReasonIncomplete     SyncErrorReason = "incomplete"
+	SyncReasonStorage        SyncErrorReason = "storage"
+	SyncReasonInternal       SyncErrorReason = "internal"
+)
+
+type SyncError struct {
+	Reason SyncErrorReason
+	Err    error
+}
+
+func (e *SyncError) Error() string { return e.Err.Error() }
+func (e *SyncError) Unwrap() error { return e.Err }
+
+func NewSyncError(reason SyncErrorReason, err error) error {
+	if err == nil {
+		return nil
+	}
+	var existing *SyncError
+	if errors.As(err, &existing) {
+		return err
+	}
+	return &SyncError{Reason: reason, Err: err}
+}
+
+func SyncErrorReasonOf(err error) SyncErrorReason {
+	var syncErr *SyncError
+	if errors.As(err, &syncErr) {
+		return syncErr.Reason
+	}
+	return SyncReasonInternal
+}
+
 type SyncResult struct {
-	Added          int        `json:"added"`
-	Updated        int        `json:"updated"`
-	Pages          int        `json:"pages"`
-	ElapsedMs      int64      `json:"elapsedMs"`
-	LastSyncedTime string     `json:"lastSyncedTime"`
-	Status         SyncStatus `json:"status"`
-	Warnings       []string   `json:"warnings,omitempty"`
+	Added          int             `json:"added"`
+	Updated        int             `json:"updated"`
+	Pages          int             `json:"pages"`
+	ElapsedMs      int64           `json:"elapsedMs"`
+	LastSyncedTime string          `json:"lastSyncedTime"`
+	Status         SyncStatus      `json:"status"`
+	Reason         SyncErrorReason `json:"reason,omitempty"`
+	Warnings       []string        `json:"warnings,omitempty"`
 }
 
 type HistoryFilter struct {

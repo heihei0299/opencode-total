@@ -102,8 +102,18 @@ func TestSyncFailureIncludesFailedStatus(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/opencode/sync", strings.NewReader("{}"))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"status":"failed"`) {
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"status":"failed"`) || !strings.Contains(response.Body.String(), `"reason":"server"`) {
 		t.Fatalf("failed sync = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestSyncRejectsNegativeLimitAsBadRequest(t *testing.T) {
+	handler := NewServer("", Options{DataDir: t.TempDir()}).Handler()
+	request := httptest.NewRequest(http.MethodPost, "/api/opencode/sync", strings.NewReader(`{"limit":-1}`))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "Bad Request") {
+		t.Fatalf("negative limit = %d %s", response.Code, response.Body.String())
 	}
 }
 

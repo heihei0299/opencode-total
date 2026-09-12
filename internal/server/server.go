@@ -195,6 +195,10 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 		sendError(w, http.StatusBadRequest, "Bad Request", "请求体不是合法 JSON")
 		return
 	}
+	if body.Limit < 0 {
+		sendError(w, http.StatusBadRequest, "Bad Request", fmt.Sprintf("无效 limit: %d（需为非负整数）", body.Limit))
+		return
+	}
 	workspace := body.WorkspaceID
 	if workspace == "" {
 		workspace = body.Workspace
@@ -207,18 +211,17 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 		Limit:     body.Limit,
 	})
 	if err != nil {
-		status := http.StatusInternalServerError
-		errorName := "Internal Server Error"
-		if strings.Contains(err.Error(), "同步进行中") {
-			status = http.StatusConflict
-			errorName = "Conflict"
+		reason := result.Reason
+		if reason == "" {
+			reason = opencode.SyncErrorReasonOf(err)
 		}
-		if status == http.StatusConflict {
-			sendError(w, status, errorName, err.Error())
+		if reason == opencode.SyncReasonConflict {
+			sendError(w, http.StatusConflict, "Conflict", err.Error())
 		} else {
-			sendJSON(w, status, map[string]any{
+			sendJSON(w, http.StatusInternalServerError, map[string]any{
 				"status": opencode.SyncFailed,
-				"error":  errorName,
+				"reason": reason,
+				"error":  "Internal Server Error",
 				"detail": err.Error(),
 			})
 		}

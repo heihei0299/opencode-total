@@ -48,7 +48,7 @@ func TestRunReportsPartialWhenMonthlyCostsFailAfterHistory(t *testing.T) {
 			calls = append(calls, "history")
 			usageCalls++
 			if usageCalls == 1 {
-				return syncerRPCResponse([]opencode.UsageRecord{{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z"}}), nil
+				return syncerRPCResponse([]opencode.UsageRecord{{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z", Model: "test-model", Provider: "test-provider"}}), nil
 			}
 			return syncerRPCResponse([]opencode.UsageRecord{}), nil
 		case opencode.FnMonthlyCosts:

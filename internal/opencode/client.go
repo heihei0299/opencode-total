@@ -38,11 +38,29 @@ func NewClientWithHTTPClient(auth string, httpClient *http.Client) *Client {
 }
 
 func retryableRPCError(err error) bool {
-	if err == nil {
-		return false
+	reason := SyncErrorReasonOf(err)
+	return reason == SyncReasonNetwork || reason == SyncReasonServer
+}
+
+func wrapRPCError(err error) error {
+	if err == nil || SyncErrorReasonOf(err) != SyncReasonInternal {
+		return err
 	}
 	message := err.Error()
-	return strings.HasPrefix(message, "网络超时:") || strings.HasPrefix(message, "服务器错误:")
+	switch {
+	case strings.HasPrefix(message, "网络超时:"):
+		return NewSyncError(SyncReasonNetwork, err)
+	case strings.HasPrefix(message, "认证失效:"):
+		return NewSyncError(SyncReasonAuthentication, err)
+	case strings.Contains(message, "HTTP 404"):
+		return NewSyncError(SyncReasonNotFound, err)
+	case strings.HasPrefix(message, "服务器错误:"):
+		return NewSyncError(SyncReasonServer, err)
+	case strings.HasPrefix(message, "请求失败:"):
+		return NewSyncError(SyncReasonHTTP, err)
+	default:
+		return NewSyncError(SyncReasonDecode, err)
+	}
 }
 
 func (c *Client) buildCookieHeader() string {
@@ -64,7 +82,8 @@ func (c *Client) buildCookieHeader() string {
 	return cookieBase
 }
 
-func (c *Client) rpc(fnID string, args []any) (any, error) {
+func (c *Client) rpc(fnID string, args []any) (value any, err error) {
+	defer func() { err = wrapRPCError(err) }()
 	if c.auth == "" {
 		return nil, fmt.Errorf("认证失效: 缺少 OpenCode auth，请设置 OPENCODE_AUTH 或传入 --auth（凭证过期/缺失）")
 	}
@@ -202,7 +221,7 @@ func (c *Client) GetMonthlyCosts(workspaceID string, yearMonth ...int) (*CostsRe
 	bytes, _ := json.Marshal(raw)
 	var res CostsResult
 	if err := json.Unmarshal(bytes, &res); err != nil {
-		return nil, err
+		return nil, NewSyncError(SyncReasonDecode, err)
 	}
 	return &res, nil
 }
@@ -214,7 +233,7 @@ func (c *Client) GetUsageHistory(workspaceID string, page int) ([]UsageRecord, e
 		raw, err = c.rpc(FnUsageHistory, []any{workspaceID, page})
 	}
 	if err != nil {
-		if page != 0 {
+		if page != 0 || SyncErrorReasonOf(err) == SyncReasonDecode {
 			return nil, err
 		}
 		html, htmlErr := c.fetchUsageHTML(workspaceID)
@@ -226,25 +245,60 @@ func (c *Client) GetUsageHistory(workspaceID string, page int) ([]UsageRecord, e
 		}
 		return nil, err
 	}
-	bytes, _ := json.Marshal(raw)
-	var records []UsageRecord
-	if err := json.Unmarshal(bytes, &records); err == nil {
-		return filterUsageRecords(records), nil
+	records, err := decodeUsageRecords(raw)
+	if err != nil {
+		return nil, NewSyncError(SyncReasonDecode, err)
 	}
-	var wrapper struct {
-		Data    []UsageRecord `json:"data"`
-		Records []UsageRecord `json:"records"`
-		Usage   []UsageRecord `json:"usage"`
+	return records, nil
+}
+
+func decodeUsageRecords(raw any) ([]UsageRecord, error) {
+	bytes, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
 	}
+	text := strings.TrimSpace(string(bytes))
+	if strings.HasPrefix(text, "[") {
+		var records []UsageRecord
+		if err := json.Unmarshal(bytes, &records); err != nil {
+			return nil, err
+		}
+		return validateUsageRecords(records)
+	}
+
+	var wrapper map[string]json.RawMessage
 	if err := json.Unmarshal(bytes, &wrapper); err != nil {
 		return nil, err
 	}
-	for _, candidate := range [][]UsageRecord{wrapper.Data, wrapper.Records, wrapper.Usage} {
-		if candidate != nil {
-			return filterUsageRecords(candidate), nil
+	for _, key := range []string{"data", "records", "usage"} {
+		value, ok := wrapper[key]
+		if !ok || string(value) == "null" {
+			continue
 		}
+		var records []UsageRecord
+		if err := json.Unmarshal(value, &records); err != nil {
+			return nil, err
+		}
+		return validateUsageRecords(records)
 	}
-	return []UsageRecord{}, nil
+	return nil, fmt.Errorf("无法识别 OpenCode usage history 响应")
+}
+
+func validateUsageRecords(records []UsageRecord) ([]UsageRecord, error) {
+	out := make([]UsageRecord, 0, len(records))
+	for _, record := range records {
+		if !strings.HasPrefix(record.ID, "usg_") {
+			continue
+		}
+		if strings.TrimSpace(record.TimeCreated) == "" {
+			return nil, fmt.Errorf("usage record %s 缺少 timeCreated", record.ID)
+		}
+		if strings.TrimSpace(record.Model) == "" || strings.TrimSpace(record.Provider) == "" {
+			return nil, fmt.Errorf("usage record %s 缺少 model 或 provider", record.ID)
+		}
+		out = append(out, record)
+	}
+	return out, nil
 }
 
 func (c *Client) fetchUsageHTML(workspaceID string) (string, error) {
@@ -306,7 +360,11 @@ func parseUsageHTML(html string) []UsageRecord {
 		}
 	}
 	sortUsage(records)
-	return records
+	validated, err := validateUsageRecords(records)
+	if err != nil {
+		return []UsageRecord{}
+	}
+	return validated
 }
 
 func jsString(object, key string) string {
@@ -324,14 +382,4 @@ func jsNumber(object, key string) float64 {
 	}
 	value, _ := strconv.ParseFloat(match[1], 64)
 	return value
-}
-
-func filterUsageRecords(records []UsageRecord) []UsageRecord {
-	out := make([]UsageRecord, 0, len(records))
-	for _, record := range records {
-		if strings.HasPrefix(record.ID, "usg_") {
-			out = append(out, record)
-		}
-	}
-	return out
 }

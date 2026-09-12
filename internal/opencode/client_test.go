@@ -40,7 +40,7 @@ func TestClientRPCAndPagination(t *testing.T) {
 			if !strings.Contains(request.URL.Query().Get("args"), "0") {
 				t.Fatalf("usage args = %q", request.URL.Query().Get("args"))
 			}
-			return rpcResponse(map[string]any{"records": []any{map[string]any{"id": "usg_1", "workspaceID": "wrk_test"}, map[string]any{"id": "ignored"}}}), nil
+			return rpcResponse(map[string]any{"records": []any{map[string]any{"id": "usg_1", "workspaceID": "wrk_test", "timeCreated": "2026-09-01T00:00:00Z", "model": "test-model", "provider": "test-provider"}, map[string]any{"id": "ignored"}}}), nil
 		default:
 			t.Fatalf("unexpected function id: %s", request.Header.Get("X-Server-Id"))
 			return nil, nil
@@ -81,7 +81,7 @@ func TestUsageHistoryRetriesTransientLaterPageError(t *testing.T) {
 		if calls == 1 {
 			return &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader("temporary failure")), Header: make(http.Header)}, nil
 		}
-		return rpcResponse(map[string]any{"records": []UsageRecord{{ID: "usg_retry"}}}), nil
+		return rpcResponse(map[string]any{"records": []UsageRecord{{ID: "usg_retry", TimeCreated: "2026-09-01T00:00:00Z", Model: "test-model", Provider: "test-provider"}}}), nil
 	})})
 	records, err := client.GetUsageHistory("wrk_test", 1)
 	if err != nil || len(records) != 1 || records[0].ID != "usg_retry" {
@@ -99,7 +99,7 @@ func TestUsageHistoryRetriesNetworkError(t *testing.T) {
 		if calls == 1 {
 			return nil, errors.New("connection reset")
 		}
-		return rpcResponse(map[string]any{"records": []UsageRecord{{ID: "usg_network_retry"}}}), nil
+		return rpcResponse(map[string]any{"records": []UsageRecord{{ID: "usg_network_retry", TimeCreated: "2026-09-01T00:00:00Z", Model: "test-model", Provider: "test-provider"}}}), nil
 	})})
 	records, err := client.GetUsageHistory("wrk_test", 1)
 	if err != nil || len(records) != 1 || records[0].ID != "usg_network_retry" {
@@ -150,6 +150,42 @@ func TestUsageHistoryDoesNotRetryParseError(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("parse error calls = %d, want 1", calls)
+	}
+}
+
+func TestUsageHistoryRejectsUnknownEnvelope(t *testing.T) {
+	client := NewClientWithHTTPClient("test-cookie", &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return rpcResponse(map[string]any{"unexpected": []any{}}), nil
+	})})
+	if _, err := client.GetUsageHistory("wrk_test", 1); err == nil {
+		t.Fatal("unknown usage envelope must fail")
+	}
+}
+
+func TestUsageHistoryRejectsIncompleteUsageRecord(t *testing.T) {
+	client := NewClientWithHTTPClient("test-cookie", &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return rpcResponse(map[string]any{"records": []map[string]any{{"id": "usg_incomplete", "timeCreated": "2026-09-01T00:00:00Z"}}}), nil
+	})})
+	if _, err := client.GetUsageHistory("wrk_test", 1); err == nil {
+		t.Fatal("incomplete usage records must fail")
+	}
+}
+
+func TestUsageHistoryDoesNotFallbackAfterDecodeError(t *testing.T) {
+	calls := 0
+	client := NewClientWithHTTPClient("test-cookie", &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		if request.URL.Path == "/_server" {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("not json")), Header: make(http.Header)}, nil
+		}
+		html := `<script>$R[1]={id:"usg_html",timeCreated:"2026-09-01T00:00:00Z",model:"m1",provider:"p1",inputTokens:12}</script>`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(html)), Header: make(http.Header)}, nil
+	})})
+	if _, err := client.GetUsageHistory("wrk_test", 0); err == nil {
+		t.Fatal("decode errors must not fall back to HTML")
+	}
+	if calls != 1 {
+		t.Fatalf("decode error requests = %d, want 1", calls)
 	}
 }
 
