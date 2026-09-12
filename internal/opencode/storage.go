@@ -29,9 +29,10 @@ type historySaveResult struct {
 }
 
 type mergeHistoryResult struct {
-	added   int
-	updated int
-	csvErr  error
+	added          int
+	updated        int
+	lastSyncedTime string
+	csvErr         error
 }
 
 func failedSyncResult(reason SyncErrorReason, err error) (SyncResult, error) {
@@ -263,6 +264,9 @@ func validateStoredHistoryRecords(records []UsageRecord) error {
 			return fmt.Errorf("历史记录 %d 缺少 id", index)
 		}
 		if strings.TrimSpace(record.TimeCreated) == "" {
+			if strings.TrimSpace(record.Model) == "" && strings.TrimSpace(record.Provider) == "" {
+				continue
+			}
 			return fmt.Errorf("历史记录 %s 缺少 timeCreated", record.ID)
 		}
 	}
@@ -350,6 +354,7 @@ func (s *Storage) mergeHistory(records []UsageRecord) (mergeHistoryResult, error
 		return mergeHistoryResult{}, err
 	}
 	result.csvErr = saved.csvErr
+	result.lastSyncedTime = pointerValue(last)
 	return result, nil
 }
 
@@ -568,6 +573,8 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 		return failWithProgress(SyncReasonIncomplete, fmt.Errorf("sync 未完成：达到页数上限前未遇到结束位置"))
 	}
 	added, updated := 0, 0
+	lastSyncedTime := pointerValue(history.LastSyncedTime)
+	historyCommitted := false
 	status := SyncComplete
 	warnings := []string{}
 	if len(collected) > 0 {
@@ -577,6 +584,8 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 		}
 		added = merged.added
 		updated = merged.updated
+		lastSyncedTime = merged.lastSyncedTime
+		historyCommitted = true
 		if merged.csvErr != nil {
 			status = SyncPartial
 			warnings = append(warnings, fmt.Sprintf("派生 CSV 未更新: %v", merged.csvErr))
@@ -587,6 +596,19 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 	}
 	after, err := s.LoadHistory()
 	if err != nil {
+		if historyCommitted {
+			warnings = append(warnings, fmt.Sprintf("历史提交后回读失败: %v", err))
+			return SyncResult{
+				Added:          added,
+				Updated:        updated,
+				Pages:          pages,
+				ElapsedMs:      time.Since(start).Milliseconds(),
+				LastSyncedTime: lastSyncedTime,
+				Status:         SyncPartial,
+				Reason:         SyncReasonStorage,
+				Warnings:       warnings,
+			}, nil
+		}
 		return failWithProgress(SyncReasonStorage, err)
 	}
 	return SyncResult{

@@ -136,7 +136,7 @@ func TestStorageReadsLegacyData(t *testing.T) {
 	if err := os.WriteFile(storage.costsPath(), []byte(`{"entries":{"2026-09":{"usage":[],"keys":[]}}}`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(storage.historyPath(), []byte(`{"records":[{"id":"usg_legacy","timeCreated":"2026-09-01T00:00:00Z"}]}`), 0644); err != nil {
+	if err := os.WriteFile(storage.historyPath(), []byte(`{"records":[{"id":"usg_legacy"}]}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 	costs, err := storage.GetCosts(2026, 9)
@@ -219,7 +219,7 @@ func (enrichment *finalHistoryReadFailureEnrichment) MarshalJSON() ([]byte, erro
 	return []byte("null"), nil
 }
 
-func TestStorageSyncReportsProgressWhenFinalHistoryReadFails(t *testing.T) {
+func TestStorageSyncReportsPartialWhenFinalHistoryReadFails(t *testing.T) {
 	dataDir := t.TempDir()
 	storage := NewStorage(dataDir)
 	old := UsageRecord{ID: "usg_old", TimeCreated: "2026-09-01T00:00:00Z", Model: "old-model", Provider: "old-provider"}
@@ -232,11 +232,14 @@ func TestStorageSyncReportsProgressWhenFinalHistoryReadFails(t *testing.T) {
 		0: {{ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z", Model: "new-model", Provider: "new-provider", Enrichment: enrichment}},
 		1: {},
 	}, SyncOptions{WorkspaceID: "wrk_test"})
-	if err == nil || result.Status != SyncFailed {
+	if err != nil || result.Status != SyncPartial {
 		t.Fatalf("final history read failure = %+v, err = %v", result, err)
 	}
-	if result.Pages != 2 || result.LastSyncedTime != old.TimeCreated || result.Added != 0 || result.Updated != 0 {
+	if result.Pages != 2 || result.LastSyncedTime != "2026-09-02T00:00:00Z" || result.Added != 1 || result.Updated != 0 || result.Reason != SyncReasonStorage {
 		t.Fatalf("final history read failure progress = %+v", result)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "历史提交后回读失败") {
+		t.Fatalf("final history read failure warnings = %+v", result.Warnings)
 	}
 	if enrichment.calls != 2 {
 		t.Fatalf("history enrichment marshal calls = %d, want 2", enrichment.calls)
