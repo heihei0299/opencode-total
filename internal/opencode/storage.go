@@ -245,7 +245,7 @@ func (s *Storage) LoadHistory() (*HistoryFile, error) {
 	if err := json.Unmarshal(data, &history); err != nil {
 		return nil, err
 	}
-	if err := validateStoredHistoryRecords(records); err != nil {
+	if err := validateLoadedHistoryRecords(records); err != nil {
 		return nil, err
 	}
 	history.Records = records
@@ -258,32 +258,77 @@ func (s *Storage) LoadHistory() (*HistoryFile, error) {
 	return &history, nil
 }
 
-func validateStoredHistoryRecords(records []UsageRecord) error {
+func validateLoadedHistoryRecords(records []UsageRecord) error {
 	for index, record := range records {
 		if strings.TrimSpace(record.ID) == "" {
 			return fmt.Errorf("历史记录 %d 缺少 id", index)
 		}
-		if strings.TrimSpace(record.TimeCreated) == "" {
-			if strings.TrimSpace(record.Model) == "" && strings.TrimSpace(record.Provider) == "" {
-				continue
+		if isLegacyHistoryRecord(record) {
+			continue
+		}
+		if err := validateNewHistoryRecord(index, record); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateNewHistoryRecords(records []UsageRecord) error {
+	for index, record := range records {
+		if err := validateNewHistoryRecord(index, record); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateNewHistoryRecord(index int, record UsageRecord) error {
+	if strings.TrimSpace(record.ID) == "" {
+		return fmt.Errorf("历史记录 %d 缺少 id", index)
+	}
+	if strings.TrimSpace(record.TimeCreated) == "" {
+		return fmt.Errorf("历史记录 %s 缺少 timeCreated", record.ID)
+	}
+	if strings.TrimSpace(record.Model) == "" || strings.TrimSpace(record.Provider) == "" {
+		return fmt.Errorf("历史记录 %s 缺少 model 或 provider", record.ID)
+	}
+	return nil
+}
+
+func isLegacyHistoryRecord(record UsageRecord) bool {
+	return reflect.DeepEqual(record, UsageRecord{ID: record.ID})
+}
+
+func validateMergedHistoryRecords(records []UsageRecord) error {
+	for index, record := range records {
+		if isLegacyHistoryRecord(record) {
+			if strings.TrimSpace(record.ID) == "" {
+				return fmt.Errorf("历史记录 %d 缺少 id", index)
 			}
-			return fmt.Errorf("历史记录 %s 缺少 timeCreated", record.ID)
+			continue
+		}
+		if err := validateNewHistoryRecord(index, record); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
 func (s *Storage) SaveHistory(records []UsageRecord, lastSyncedTime *string) error {
-	result, err := s.saveHistory(records, lastSyncedTime)
+	result, err := s.saveHistory(records, lastSyncedTime, false)
 	if err != nil {
 		return err
 	}
 	return result.csvErr
 }
 
-func (s *Storage) saveHistory(records []UsageRecord, lastSyncedTime *string) (historySaveResult, error) {
+func (s *Storage) saveHistory(records []UsageRecord, lastSyncedTime *string, allowLegacy bool) (historySaveResult, error) {
 	ordered := append([]UsageRecord(nil), records...)
-	if err := validateStoredHistoryRecords(ordered); err != nil {
+	if allowLegacy {
+		if err := validateMergedHistoryRecords(ordered); err != nil {
+			return historySaveResult{}, err
+		}
+	} else if err := validateNewHistoryRecords(ordered); err != nil {
 		return historySaveResult{}, err
 	}
 	if err := s.EnsureDataDir(); err != nil {
@@ -349,7 +394,7 @@ func (s *Storage) mergeHistory(records []UsageRecord) (mergeHistoryResult, error
 	} else {
 		last = history.LastSyncedTime
 	}
-	saved, err := s.saveHistory(merged, last)
+	saved, err := s.saveHistory(merged, last, true)
 	if err != nil {
 		return mergeHistoryResult{}, err
 	}

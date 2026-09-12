@@ -24,6 +24,41 @@ func TestLoadHistoryRejectsMalformedRecord(t *testing.T) {
 	}
 }
 
+func TestSaveHistoryRejectsIncompleteRecordBeforeWrite(t *testing.T) {
+	storage := NewStorage(t.TempDir())
+	old := UsageRecord{ID: "usg_old", TimeCreated: "2026-09-01T00:00:00Z", Model: "old-model", Provider: "old-provider"}
+	if err := storage.SaveHistory([]UsageRecord{old}, &old.TimeCreated); err != nil {
+		t.Fatal(err)
+	}
+	beforeHistory, err := os.ReadFile(storage.historyPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeCSV, err := os.ReadFile(storage.csvPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = storage.SaveHistory([]UsageRecord{{ID: "usg_invalid", TimeCreated: "2026-09-02T00:00:00Z", Model: "new-model"}}, nil)
+	if err == nil {
+		t.Fatal("incomplete record must be rejected before writing")
+	}
+	afterHistory, err := os.ReadFile(storage.historyPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterHistory) != string(beforeHistory) {
+		t.Fatal("incomplete record changed history.json")
+	}
+	afterCSV, err := os.ReadFile(storage.csvPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterCSV) != string(beforeCSV) {
+		t.Fatal("incomplete record changed history.csv")
+	}
+}
+
 func TestStorageAndFlock(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "opencode-storage-test-*")
 	if err != nil {
