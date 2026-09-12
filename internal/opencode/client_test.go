@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -56,6 +57,99 @@ func TestClientRPCAndPagination(t *testing.T) {
 	records, err := client.GetUsageHistory("wrk_test", 0)
 	if err != nil || len(records) != 1 || records[0].ID != "usg_1" {
 		t.Fatalf("records = %+v, err = %v", records, err)
+	}
+}
+
+func TestUsageHistoryDoesNotHideLaterPageError(t *testing.T) {
+	calls := 0
+	client := NewClientWithHTTPClient("test-cookie", &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusInternalServerError, Body: io.NopCloser(strings.NewReader("failed")), Header: make(http.Header)}, nil
+	})})
+	if _, err := client.GetUsageHistory("wrk_test", 1); err == nil {
+		t.Fatal("later-page errors must be returned to the caller")
+	}
+	if calls != 2 {
+		t.Fatalf("later-page error calls = %d, want 2", calls)
+	}
+}
+
+func TestUsageHistoryRetriesTransientLaterPageError(t *testing.T) {
+	calls := 0
+	client := NewClientWithHTTPClient("test-cookie", &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader("temporary failure")), Header: make(http.Header)}, nil
+		}
+		return rpcResponse(map[string]any{"records": []UsageRecord{{ID: "usg_retry"}}}), nil
+	})})
+	records, err := client.GetUsageHistory("wrk_test", 1)
+	if err != nil || len(records) != 1 || records[0].ID != "usg_retry" {
+		t.Fatalf("records = %+v, err = %v", records, err)
+	}
+	if calls != 2 {
+		t.Fatalf("transient page error calls = %d, want 2", calls)
+	}
+}
+
+func TestUsageHistoryRetriesNetworkError(t *testing.T) {
+	calls := 0
+	client := NewClientWithHTTPClient("test-cookie", &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("connection reset")
+		}
+		return rpcResponse(map[string]any{"records": []UsageRecord{{ID: "usg_network_retry"}}}), nil
+	})})
+	records, err := client.GetUsageHistory("wrk_test", 1)
+	if err != nil || len(records) != 1 || records[0].ID != "usg_network_retry" {
+		t.Fatalf("records = %+v, err = %v", records, err)
+	}
+	if calls != 2 {
+		t.Fatalf("network error calls = %d, want 2", calls)
+	}
+}
+
+func TestUsageHistoryDoesNotRetryAuthenticationError(t *testing.T) {
+	calls := 0
+	client := NewClientWithHTTPClient("test-cookie", &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader("unauthorized")), Header: make(http.Header)}, nil
+	})})
+	if _, err := client.GetUsageHistory("wrk_test", 1); err == nil {
+		t.Fatal("authentication errors must be returned")
+	}
+	if calls != 1 {
+		t.Fatalf("authentication error calls = %d, want 1", calls)
+	}
+}
+
+func TestUsageHistoryDoesNotRetryOtherClientError(t *testing.T) {
+	calls := 0
+	client := NewClientWithHTTPClient("test-cookie", &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusTooManyRequests, Body: io.NopCloser(strings.NewReader("rate limited")), Header: make(http.Header)}, nil
+	})})
+	_, err := client.GetUsageHistory("wrk_test", 1)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 429") {
+		t.Fatalf("expected HTTP 429 error, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("client error calls = %d, want 1", calls)
+	}
+}
+
+func TestUsageHistoryDoesNotRetryParseError(t *testing.T) {
+	calls := 0
+	client := NewClientWithHTTPClient("test-cookie", &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("not json")), Header: make(http.Header)}, nil
+	})})
+	if _, err := client.GetUsageHistory("wrk_test", 1); err == nil {
+		t.Fatal("parse errors must be returned")
+	}
+	if calls != 1 {
+		t.Fatalf("parse error calls = %d, want 1", calls)
 	}
 }
 

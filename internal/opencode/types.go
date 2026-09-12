@@ -54,6 +54,7 @@ type SyncOptions struct {
 
 type SyncResult struct {
 	Added          int    `json:"added"`
+	Updated        int    `json:"updated"`
 	Pages          int    `json:"pages"`
 	ElapsedMs      int64  `json:"elapsedMs"`
 	LastSyncedTime string `json:"lastSyncedTime"`

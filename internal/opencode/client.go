@@ -37,6 +37,14 @@ func NewClientWithHTTPClient(auth string, httpClient *http.Client) *Client {
 	return &Client{auth: strings.TrimSpace(auth), httpClient: httpClient}
 }
 
+func retryableRPCError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.HasPrefix(message, "网络超时:") || strings.HasPrefix(message, "服务器错误:")
+}
+
 func (c *Client) buildCookieHeader() string {
 	raw := c.auth
 	var cookieBase string
@@ -104,6 +112,9 @@ func (c *Client) rpc(fnID string, args []any) (any, error) {
 		}
 		if resp.StatusCode >= 500 {
 			return nil, fmt.Errorf("服务器错误: OpenCode 服务异常（HTTP %d），请稍后重试", resp.StatusCode)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("请求失败: OpenCode 返回 HTTP %d", resp.StatusCode)
 		}
 
 		bodyBytes, err := io.ReadAll(resp.Body)
@@ -198,9 +209,13 @@ func (c *Client) GetMonthlyCosts(workspaceID string, yearMonth ...int) (*CostsRe
 
 func (c *Client) GetUsageHistory(workspaceID string, page int) ([]UsageRecord, error) {
 	raw, err := c.rpc(FnUsageHistory, []any{workspaceID, page})
+	if retryableRPCError(err) {
+		time.Sleep(500 * time.Millisecond)
+		raw, err = c.rpc(FnUsageHistory, []any{workspaceID, page})
+	}
 	if err != nil {
 		if page != 0 {
-			return []UsageRecord{}, nil
+			return nil, err
 		}
 		html, htmlErr := c.fetchUsageHTML(workspaceID)
 		if htmlErr == nil {

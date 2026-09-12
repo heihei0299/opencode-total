@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -200,21 +201,28 @@ func (s *Storage) SaveHistory(records []UsageRecord, lastSyncedTime *string) err
 }
 
 func (s *Storage) MergeHistory(records []UsageRecord) (int, error) {
+	added, _, err := s.mergeHistory(records)
+	return added, err
+}
+
+func (s *Storage) mergeHistory(records []UsageRecord) (int, int, error) {
 	if err := s.EnsureDataDir(); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	history, err := s.LoadHistory()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	byID := make(map[string]UsageRecord, len(history.Records)+len(records))
 	for _, record := range history.Records {
 		byID[record.ID] = record
 	}
-	added := 0
+	added, updated := 0, 0
 	for _, record := range records {
-		if _, exists := byID[record.ID]; !exists {
+		if existing, exists := byID[record.ID]; !exists {
 			added++
+		} else if !reflect.DeepEqual(existing, record) {
+			updated++
 		}
 		byID[record.ID] = record
 	}
@@ -231,9 +239,9 @@ func (s *Storage) MergeHistory(records []UsageRecord) (int, error) {
 		last = history.LastSyncedTime
 	}
 	if err := s.SaveHistory(merged, last); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return added, nil
+	return added, updated, nil
 }
 
 func sortUsage(records []UsageRecord) {
@@ -400,6 +408,7 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 	last, lastOK := parseTimestamp(pointerValue(history.LastSyncedTime))
 	collected := make([]UsageRecord, 0)
 	pages := 0
+	completed := false
 	maxPages := options.Limit
 	if maxPages == 0 {
 		// ponytail: finite safety cap for a broken pagination endpoint; raise only if OpenCode history exceeds 200 pages.
@@ -413,6 +422,7 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 			return SyncResult{}, err
 		}
 		if len(batch) == 0 {
+			completed = true
 			break
 		}
 		if options.Full {
@@ -433,14 +443,18 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 			}
 		}
 		if cutoff >= 0 {
-			collected = append(collected, batch[:cutoff]...)
+			collected = append(collected, batch...)
+			completed = true
 			break
 		}
 		collected = append(collected, batch...)
 	}
-	added := 0
+	if !completed {
+		return SyncResult{}, fmt.Errorf("sync 未完成：达到页数上限前未遇到结束位置")
+	}
+	added, updated := 0, 0
 	if len(collected) > 0 {
-		added, err = s.MergeHistory(collected)
+		added, updated, err = s.mergeHistory(collected)
 	} else {
 		err = s.ExportCSV(history.Records)
 	}
@@ -453,6 +467,7 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 	}
 	return SyncResult{
 		Added:          added,
+		Updated:        updated,
 		Pages:          pages,
 		ElapsedMs:      time.Since(start).Milliseconds(),
 		LastSyncedTime: pointerValue(after.LastSyncedTime),
