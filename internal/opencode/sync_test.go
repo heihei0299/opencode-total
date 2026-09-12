@@ -136,7 +136,7 @@ func TestStorageReadsLegacyData(t *testing.T) {
 	if err := os.WriteFile(storage.costsPath(), []byte(`{"entries":{"2026-09":{"usage":[],"keys":[]}}}`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(storage.historyPath(), []byte(`{"records":[{"id":"usg_legacy"}]}`), 0644); err != nil {
+	if err := os.WriteFile(storage.historyPath(), []byte(`{"records":[{"id":"usg_legacy"},{"id":"usg_legacy_with_time","timeCreated":"2026-09-01T00:00:00Z"}]}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 	costs, err := storage.GetCosts(2026, 9)
@@ -144,7 +144,7 @@ func TestStorageReadsLegacyData(t *testing.T) {
 		t.Fatalf("legacy costs = %+v, err = %v", costs, err)
 	}
 	history, err := storage.LoadHistory()
-	if err != nil || len(history.Records) != 1 || history.Records[0].ID != "usg_legacy" {
+	if err != nil || len(history.Records) != 2 || history.Records[0].ID != "usg_legacy" || history.Records[1].ID != "usg_legacy_with_time" {
 		t.Fatalf("legacy history = %+v, err = %v", history, err)
 	}
 	result, err := storage.Sync(fakeUsageClient{
@@ -155,7 +155,7 @@ func TestStorageReadsLegacyData(t *testing.T) {
 		t.Fatalf("legacy history sync = %+v, err = %v", result, err)
 	}
 	history, err = storage.LoadHistory()
-	if err != nil || len(history.Records) != 2 || history.Records[0].ID != "usg_new" || history.Records[1].ID != "usg_legacy" {
+	if err != nil || len(history.Records) != 3 || history.Records[0].ID != "usg_new" || history.Records[1].ID != "usg_legacy_with_time" || history.Records[2].ID != "usg_legacy" {
 		t.Fatalf("merged legacy history = %+v, err = %v", history, err)
 	}
 }
