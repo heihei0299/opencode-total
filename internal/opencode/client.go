@@ -138,7 +138,7 @@ func (c *Client) rpc(fnID string, args []any) (value any, err error) {
 
 		bodyBytes, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("网络超时: 读取 OpenCode 响应失败 — %v", err)
 		}
 		return DecodeResponseText(string(bodyBytes))
 	}
@@ -178,7 +178,7 @@ func (c *Client) rpc(fnID string, args []any) (value any, err error) {
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("网络超时: 读取 OpenCode 响应失败 — %v", err)
 	}
 	return DecodeResponseText(string(bodyBytes))
 }
@@ -218,12 +218,45 @@ func (c *Client) GetMonthlyCosts(workspaceID string, yearMonth ...int) (*CostsRe
 	if err != nil {
 		return nil, err
 	}
-	bytes, _ := json.Marshal(raw)
-	var res CostsResult
-	if err := json.Unmarshal(bytes, &res); err != nil {
+	result, err := decodeCostsResult(raw)
+	if err != nil {
 		return nil, NewSyncError(SyncReasonDecode, err)
 	}
-	return &res, nil
+	return &result, nil
+}
+
+func decodeCostsResult(raw any) (CostsResult, error) {
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return CostsResult{}, err
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return CostsResult{}, err
+	}
+	if object == nil {
+		return CostsResult{}, fmt.Errorf("成本响应必须是 JSON 对象")
+	}
+	usage, usageOK := object["usage"]
+	keys, keysOK := object["keys"]
+	if !usageOK || !keysOK || strings.TrimSpace(string(usage)) == "null" || strings.TrimSpace(string(keys)) == "null" {
+		return CostsResult{}, fmt.Errorf("成本响应缺少 usage 或 keys 数组")
+	}
+	var usageItems []MonthlyCostItem
+	if err := json.Unmarshal(usage, &usageItems); err != nil {
+		return CostsResult{}, fmt.Errorf("无效 usage 数组: %w", err)
+	}
+	var keyItems []KeyInfo
+	if err := json.Unmarshal(keys, &keyItems); err != nil {
+		return CostsResult{}, fmt.Errorf("无效 keys 数组: %w", err)
+	}
+	var result CostsResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		return CostsResult{}, err
+	}
+	result.Usage = usageItems
+	result.Keys = keyItems
+	return result, nil
 }
 
 func (c *Client) GetUsageHistory(workspaceID string, page int) ([]UsageRecord, error) {

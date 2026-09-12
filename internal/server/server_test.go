@@ -50,7 +50,7 @@ func TestSyncReturnsConflictWhenDataDirectoryIsLocked(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/opencode/sync", strings.NewReader("{}"))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "同步进行中") || !strings.Contains(response.Body.String(), `"error":"Conflict"`) {
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "同步进行中") || !strings.Contains(response.Body.String(), `"error":"Conflict"`) || !strings.Contains(response.Body.String(), `"reason":"conflict"`) || !strings.Contains(response.Body.String(), `"status":"failed"`) || !strings.Contains(response.Body.String(), `"added":0`) {
 		t.Fatalf("locked sync = %d %s", response.Code, response.Body.String())
 	}
 }

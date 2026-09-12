@@ -120,18 +120,37 @@ func (s *Storage) readCosts() (map[string]CostsResult, error) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, err
 	}
-	if entries, ok := raw["entries"]; ok {
-		var nested map[string]CostsResult
-		if err := json.Unmarshal(entries, &nested); err == nil {
-			return nested, nil
-		}
+	if raw == nil {
+		return nil, fmt.Errorf("成本数据必须是 JSON 对象")
 	}
-	out := make(map[string]CostsResult)
-	for key, value := range raw {
-		var result CostsResult
-		if err := json.Unmarshal(value, &result); err == nil {
-			out[key] = result
+	if entries, ok := raw["entries"]; ok {
+		var nested map[string]json.RawMessage
+		if err := json.Unmarshal(entries, &nested); err != nil || nested == nil {
+			if err == nil {
+				err = fmt.Errorf("entries 不能为 null")
+			}
+			return nil, fmt.Errorf("无效成本数据 entries: %w", err)
 		}
+		return decodeCostsMap(nested)
+	}
+	return decodeCostsMap(raw)
+}
+
+func decodeCostsMap(raw map[string]json.RawMessage) (map[string]CostsResult, error) {
+	if raw == nil {
+		return nil, fmt.Errorf("成本数据必须是 JSON 对象")
+	}
+	out := make(map[string]CostsResult, len(raw))
+	for key, value := range raw {
+		var decoded any
+		if err := json.Unmarshal(value, &decoded); err != nil {
+			return nil, fmt.Errorf("无效成本数据 %s: %w", key, err)
+		}
+		result, err := decodeCostsResult(decoded)
+		if err != nil {
+			return nil, fmt.Errorf("无效成本数据 %s: %w", key, err)
+		}
+		out[key] = result
 	}
 	return out, nil
 }
@@ -206,10 +225,26 @@ func (s *Storage) LoadHistory() (*HistoryFile, error) {
 		}
 		return nil, err
 	}
+	var shape map[string]json.RawMessage
+	if err := json.Unmarshal(data, &shape); err != nil {
+		return nil, err
+	}
+	if shape == nil {
+		return nil, fmt.Errorf("历史数据必须是 JSON 对象")
+	}
+	recordsRaw, ok := shape["records"]
+	if !ok || strings.TrimSpace(string(recordsRaw)) == "null" {
+		return nil, fmt.Errorf("历史数据缺少 records 数组")
+	}
+	var records []UsageRecord
+	if err := json.Unmarshal(recordsRaw, &records); err != nil {
+		return nil, fmt.Errorf("无效 records 数组: %w", err)
+	}
 	var history HistoryFile
 	if err := json.Unmarshal(data, &history); err != nil {
 		return nil, err
 	}
+	history.Records = records
 	if history.Records == nil {
 		history.Records = []UsageRecord{}
 	}

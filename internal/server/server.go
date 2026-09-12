@@ -215,15 +215,25 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 		if reason == "" {
 			reason = opencode.SyncErrorReasonOf(err)
 		}
+		payload := map[string]any{
+			"added":          result.Added,
+			"updated":        result.Updated,
+			"pages":          result.Pages,
+			"elapsedMs":      result.ElapsedMs,
+			"lastSyncedTime": result.LastSyncedTime,
+			"status":         opencode.SyncFailed,
+			"reason":         reason,
+			"detail":         err.Error(),
+		}
+		if len(result.Warnings) > 0 {
+			payload["warnings"] = result.Warnings
+		}
 		if reason == opencode.SyncReasonConflict {
-			sendError(w, http.StatusConflict, "Conflict", err.Error())
+			payload["error"] = "Conflict"
+			sendJSON(w, http.StatusConflict, payload)
 		} else {
-			sendJSON(w, http.StatusInternalServerError, map[string]any{
-				"status": opencode.SyncFailed,
-				"reason": reason,
-				"error":  "Internal Server Error",
-				"detail": err.Error(),
-			})
+			payload["error"] = "Internal Server Error"
+			sendJSON(w, http.StatusInternalServerError, payload)
 		}
 		return
 	}
