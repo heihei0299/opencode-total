@@ -42,6 +42,9 @@ func Run(options Options) (opencode.SyncResult, error) {
 		if len(workspaces) == 0 {
 			return opencode.SyncResult{}, fmt.Errorf("无法自动发现工作区，请传入 --workspace 或设置 OPENCODE_WORKSPACE_ID")
 		}
+		if len(workspaces) > 1 {
+			return opencode.SyncResult{}, fmt.Errorf("检测到多个工作区，请传入 --workspace 或设置 OPENCODE_WORKSPACE_ID")
+		}
 		workspace = workspaces[0].ID
 		if workspace == "" {
 			workspace = workspaces[0].WorkspaceID

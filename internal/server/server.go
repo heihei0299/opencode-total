@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -50,7 +51,26 @@ func NewServer(piDir string, options ...Options) *Server {
 
 func (s *Server) Handler() http.Handler { return s.mux }
 
-func (s *Server) ListenAndServe(addr string) error { return http.ListenAndServe(addr, s.mux) }
+func (s *Server) ListenAndServe(addr string) error {
+	if err := validateLoopbackAddr(addr); err != nil {
+		return err
+	}
+	return http.ListenAndServe(addr, s.mux)
+}
+
+func validateLoopbackAddr(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("无效监听地址: %w", err)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("仅支持 loopback 监听地址: %s", host)
+	}
+	return nil
+}
 
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/", s.handleIndex)
@@ -188,10 +208,12 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		status := http.StatusInternalServerError
+		errorName := "Internal Server Error"
 		if strings.Contains(err.Error(), "同步进行中") {
 			status = http.StatusConflict
+			errorName = "Conflict"
 		}
-		sendError(w, status, "Internal Server Error", err.Error())
+		sendError(w, status, errorName, err.Error())
 		return
 	}
 	sendJSON(w, http.StatusOK, result)

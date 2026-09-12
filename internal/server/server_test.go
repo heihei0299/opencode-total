@@ -12,6 +12,76 @@ import (
 	"github.com/heihei0299/opencode-analyzer/internal/opencode"
 )
 
+func TestListenAndServeRejectsNonLoopback(t *testing.T) {
+	server := NewServer("", Options{DataDir: t.TempDir()})
+	err := server.ListenAndServe("0.0.0.0:not-a-port")
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "loopback") {
+		t.Fatalf("non-loopback address must be rejected explicitly, got %v", err)
+	}
+}
+
+func TestListenAndServeAcceptsLoopbackAddress(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:50800", "[::1]:50800", "localhost:50800"} {
+		if err := validateLoopbackAddr(addr); err != nil {
+			t.Fatalf("loopback address %q was rejected: %v", addr, err)
+		}
+	}
+}
+
+func TestSyncReturnsConflictWhenDataDirectoryIsLocked(t *testing.T) {
+	dataDir := t.TempDir()
+	storage := opencode.NewStorage(dataDir)
+	unlock, err := storage.Lock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	t.Setenv("OPENCODE_AUTH", "test-cookie")
+	t.Setenv("OPENCODE_WORKSPACE_ID", "wrk_test")
+
+	handler := NewServer("", Options{DataDir: dataDir}).Handler()
+	request := httptest.NewRequest(http.MethodPost, "/api/opencode/sync", strings.NewReader("{}"))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "同步进行中") || !strings.Contains(response.Body.String(), `"error":"Conflict"`) {
+		t.Fatalf("locked sync = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestSecondConcurrentLockFailsAndReleaseAllowsNext(t *testing.T) {
+	storage := opencode.NewStorage(t.TempDir())
+	firstUnlock, err := storage.Lock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			firstUnlock()
+		}
+	}()
+
+	result := make(chan error, 1)
+	go func() {
+		secondUnlock, err := storage.Lock()
+		if err == nil {
+			secondUnlock()
+		}
+		result <- err
+	}()
+	if err := <-result; err == nil || !strings.Contains(err.Error(), "同步进行中") {
+		t.Fatalf("concurrent lock result = %v", err)
+	}
+
+	firstUnlock()
+	released = true
+	thirdUnlock, err := storage.Lock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdUnlock()
+}
+
 func TestStandaloneHTTPAPIAndWebUI(t *testing.T) {
 	dataDir := t.TempDir()
 	piDir := t.TempDir()
