@@ -1,0 +1,66 @@
+[
+  {
+    "name": "irrelevant-message-metadata",
+    "same": true,
+    "left": {
+      "entry": {"timestamp": "2026-09-10T01:00:00Z"},
+      "kind": "assistant",
+      "usage": {"input": 10, "output": 5, "metadata": {"tier": "standard"}},
+      "message": {"provider": "p", "model": "m", "responseId": "r", "content": [{"type": "text", "text": "ok"}], "irrelevant": "first"}
+    },
+    "right": {
+      "entry": {"timestamp": "2026-09-10T01:00:00Z"},
+      "kind": "assistant",
+      "usage": {"input": 10, "output": 5, "metadata": {"tier": "standard"}},
+      "message": {"provider": "p", "model": "m", "responseId": "r", "content": [{"type": "text", "text": "ok"}], "irrelevant": "second"}
+    }
+  },
+  {
+    "name": "canonical-message-field-change",
+    "same": false,
+    "left": {
+      "entry": {"timestamp": "2026-09-10T01:00:00Z"},
+      "kind": "assistant",
+      "usage": {"input": 10, "output": 5},
+      "message": {"provider": "p", "model": "m", "responseId": "r", "content": [{"type": "text", "text": "ok"}]}
+    },
+    "right": {
+      "entry": {"timestamp": "2026-09-10T01:00:00Z"},
+      "kind": "assistant",
+      "usage": {"input": 10, "output": 5},
+      "message": {"provider": "p", "model": "m2", "responseId": "r", "content": [{"type": "text", "text": "ok"}]}
+    }
+  },
+  {
+    "name": "complete-usage-field-change",
+    "same": false,
+    "left": {
+      "entry": {"timestamp": "2026-09-10T01:00:00Z"},
+      "kind": "assistant",
+      "usage": {"input": 10, "output": 5, "metadata": {"tier": "standard"}},
+      "message": {"provider": "p", "model": "m", "responseId": "r", "content": [{"type": "text", "text": "ok"}]}
+    },
+    "right": {
+      "entry": {"timestamp": "2026-09-10T01:00:00Z"},
+      "kind": "assistant",
+      "usage": {"input": 10, "output": 5, "metadata": {"tier": "priority"}},
+      "message": {"provider": "p", "model": "m", "responseId": "r", "content": [{"type": "text", "text": "ok"}]}
+    }
+  },
+  {
+    "name": "usage-key-order-only",
+    "same": true,
+    "left": {
+      "entry": {"timestamp": "2026-09-10T01:00:00Z"},
+      "kind": "assistant",
+      "usage": {"input": 10, "output": 5, "cost": {"total": 0.1, "unit": "usd"}, "metadata": {"tier": "standard", "region": "cn"}},
+      "message": {"provider": "p", "model": "m", "responseId": "r", "content": [{"type": "text", "text": "ok"}]}
+    },
+    "right": {
+      "entry": {"timestamp": "2026-09-10T01:00:00Z"},
+      "kind": "assistant",
+      "usage": {"metadata": {"region": "cn", "tier": "standard"}, "cost": {"unit": "usd", "total": 0.1}, "output": 5, "input": 10},
+      "message": {"provider": "p", "model": "m", "responseId": "r", "content": [{"type": "text", "text": "ok"}]}
+    }
+  }
+]
