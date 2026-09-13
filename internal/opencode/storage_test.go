@@ -24,6 +24,26 @@ func TestLoadHistoryRejectsMalformedRecord(t *testing.T) {
 	}
 }
 
+func TestLoadHistoryRejectsPartiallyMissingNewFields(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		data string
+	}{
+		{name: "missing provider", data: `{"records":[{"id":"usg_model_only","timeCreated":"2026-09-01T00:00:00Z","model":"m1"}]}`},
+		{name: "missing model", data: `{"records":[{"id":"usg_provider_only","timeCreated":"2026-09-01T00:00:00Z","provider":"p1"}]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			storage := NewStorage(t.TempDir())
+			if err := os.WriteFile(filepath.Join(storage.DataDir(), "history.json"), []byte(test.data), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := storage.LoadHistory(); err == nil {
+				t.Fatal("partially missing new fields must be rejected")
+			}
+		})
+	}
+}
+
 func TestSaveHistoryRejectsIncompleteRecordBeforeWrite(t *testing.T) {
 	storage := NewStorage(t.TempDir())
 	old := UsageRecord{ID: "usg_old", TimeCreated: "2026-09-01T00:00:00Z", Model: "old-model", Provider: "old-provider"}
@@ -39,23 +59,28 @@ func TestSaveHistoryRejectsIncompleteRecordBeforeWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = storage.SaveHistory([]UsageRecord{{ID: "usg_invalid", TimeCreated: "2026-09-02T00:00:00Z", Model: "new-model"}}, nil)
-	if err == nil {
-		t.Fatal("incomplete record must be rejected before writing")
-	}
-	afterHistory, err := os.ReadFile(storage.historyPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(afterHistory) != string(beforeHistory) {
-		t.Fatal("incomplete record changed history.json")
-	}
-	afterCSV, err := os.ReadFile(storage.csvPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(afterCSV) != string(beforeCSV) {
-		t.Fatal("incomplete record changed history.csv")
+	for _, record := range []UsageRecord{
+		{ID: "usg_missing_provider", TimeCreated: "2026-09-02T00:00:00Z", Model: "new-model"},
+		{ID: "usg_missing_model", TimeCreated: "2026-09-02T00:00:00Z", Provider: "new-provider"},
+	} {
+		err = storage.SaveHistory([]UsageRecord{record}, nil)
+		if err == nil {
+			t.Fatalf("incomplete record %s must be rejected before writing", record.ID)
+		}
+		afterHistory, err := os.ReadFile(storage.historyPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(afterHistory) != string(beforeHistory) {
+			t.Fatalf("incomplete record %s changed history.json", record.ID)
+		}
+		afterCSV, err := os.ReadFile(storage.csvPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(afterCSV) != string(beforeCSV) {
+			t.Fatalf("incomplete record %s changed history.csv", record.ID)
+		}
 	}
 }
 

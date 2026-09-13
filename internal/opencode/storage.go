@@ -297,7 +297,8 @@ func validateNewHistoryRecord(index int, record UsageRecord) error {
 
 func isLegacyHistoryRecord(record UsageRecord) bool {
 	return strings.TrimSpace(record.ID) != "" &&
-		(strings.TrimSpace(record.Model) == "" || strings.TrimSpace(record.Provider) == "")
+		strings.TrimSpace(record.Model) == "" &&
+		strings.TrimSpace(record.Provider) == ""
 }
 
 func validateMergedHistoryRecords(records []UsageRecord) error {
