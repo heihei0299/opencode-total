@@ -2,7 +2,7 @@ package syncer
 
 import (
 	"fmt"
-	"strings"
+	"net/http"
 	"time"
 
 	"github.com/heihei0299/opencode-analyzer/internal/credentials"
@@ -23,6 +23,10 @@ func failedResult(reason opencode.SyncErrorReason, err error) (opencode.SyncResu
 }
 
 func Run(options Options) (opencode.SyncResult, error) {
+	return runWithHTTPClient(options, nil)
+}
+
+func runWithHTTPClient(options Options, httpClient *http.Client) (opencode.SyncResult, error) {
 	creds, err := credentials.Load(credentials.Input{
 		Auth:      options.Auth,
 		Workspace: options.Workspace,
@@ -35,14 +39,14 @@ func Run(options Options) (opencode.SyncResult, error) {
 	unlock, err := storage.Lock()
 	if err != nil {
 		reason := opencode.SyncReasonStorage
-		if strings.Contains(err.Error(), "同步进行中") {
+		if opencode.SyncErrorReasonOf(err) == opencode.SyncReasonConflict {
 			reason = opencode.SyncReasonConflict
 		}
 		return failedResult(reason, err)
 	}
 	defer unlock()
 
-	client := opencode.NewClient(creds.Auth)
+	client := opencode.NewClientWithHTTPClient(creds.Auth, httpClient)
 	workspace := creds.Workspace
 	if workspace == "" {
 		workspaces, err := client.GetWorkspaces()

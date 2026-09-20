@@ -16,7 +16,7 @@ func lockFile(path string) (func(), error) {
 
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
-		return nil, fmt.Errorf("同步进行中，请稍后再试 (lock busy)")
+		return nil, NewSyncError(SyncReasonConflict, fmt.Errorf("同步进行中，请稍后再试 (lock busy)"))
 	}
 
 	unlock := func() {

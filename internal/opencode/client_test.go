@@ -123,6 +123,8 @@ func TestUsageHistoryDoesNotHideLaterPageError(t *testing.T) {
 	})})
 	if _, err := client.GetUsageHistory("wrk_test", 1); err == nil {
 		t.Fatal("later-page errors must be returned to the caller")
+	} else if SyncErrorReasonOf(err) != SyncReasonServer {
+		t.Fatalf("later-page error reason = %q, want %q", SyncErrorReasonOf(err), SyncReasonServer)
 	}
 	if calls != 2 {
 		t.Fatalf("later-page error calls = %d, want 2", calls)
@@ -173,6 +175,8 @@ func TestUsageHistoryDoesNotRetryAuthenticationError(t *testing.T) {
 	})})
 	if _, err := client.GetUsageHistory("wrk_test", 1); err == nil {
 		t.Fatal("authentication errors must be returned")
+	} else if SyncErrorReasonOf(err) != SyncReasonAuthentication {
+		t.Fatalf("authentication error reason = %q, want %q", SyncErrorReasonOf(err), SyncReasonAuthentication)
 	}
 	if calls != 1 {
 		t.Fatalf("authentication error calls = %d, want 1", calls)
@@ -189,6 +193,9 @@ func TestUsageHistoryDoesNotRetryOtherClientError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "HTTP 429") {
 		t.Fatalf("expected HTTP 429 error, got %v", err)
 	}
+	if SyncErrorReasonOf(err) != SyncReasonHTTP {
+		t.Fatalf("HTTP 429 error reason = %q, want %q", SyncErrorReasonOf(err), SyncReasonHTTP)
+	}
 	if calls != 1 {
 		t.Fatalf("client error calls = %d, want 1", calls)
 	}
@@ -202,6 +209,8 @@ func TestUsageHistoryDoesNotRetryParseError(t *testing.T) {
 	})})
 	if _, err := client.GetUsageHistory("wrk_test", 1); err == nil {
 		t.Fatal("parse errors must be returned")
+	} else if SyncErrorReasonOf(err) != SyncReasonDecode {
+		t.Fatalf("parse error reason = %q, want %q", SyncErrorReasonOf(err), SyncReasonDecode)
 	}
 	if calls != 1 {
 		t.Fatalf("parse error calls = %d, want 1", calls)

@@ -6,6 +6,13 @@ import (
 	"testing"
 )
 
+func TestNewStorageEmptyUsesDefaultDataDir(t *testing.T) {
+	t.Setenv("OPENCODE_DATA_DIR", "env-dir")
+	if got := NewStorage("").DataDir(); got != defaultDataDir {
+		t.Fatalf("empty storage data dir = %q, want %q", got, defaultDataDir)
+	}
+}
+
 func TestLoadHistoryRejectsMalformedRecord(t *testing.T) {
 	storage := NewStorage(t.TempDir())
 	original := []byte(`{"records":[{}]}`)

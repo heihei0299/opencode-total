@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/heihei0299/opencode-analyzer/internal/opencode"
 )
 
 type Input struct {
@@ -22,13 +24,7 @@ type Credentials struct {
 
 // Load resolves CLI values over process environment over local .env files.
 func Load(input Input) (Credentials, error) {
-	dataDir := strings.TrimSpace(input.DataDir)
-	if dataDir == "" {
-		dataDir = strings.TrimSpace(os.Getenv("OPENCODE_DATA_DIR"))
-	}
-	if dataDir == "" {
-		dataDir = "data/opencode"
-	}
+	dataDir := opencode.ResolveDataDir(input.DataDir, os.Getenv("OPENCODE_DATA_DIR"))
 
 	dotEnv := loadDotEnv(dataDir)
 	auth := strings.TrimSpace(input.Auth)

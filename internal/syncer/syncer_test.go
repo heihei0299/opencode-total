@@ -41,8 +41,7 @@ func TestRunReportsPartialWhenMonthlyCostsFailAfterHistory(t *testing.T) {
 	if err := storage.SaveCosts(now.Year(), int(now.Month()), oldCosts); err != nil {
 		t.Fatal(err)
 	}
-	previousTransport := http.DefaultTransport
-	http.DefaultTransport = syncerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+	httpClient := &http.Client{Transport: syncerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch request.Header.Get("X-Server-Id") {
 		case opencode.FnUsageHistory:
 			calls = append(calls, "history")
@@ -57,10 +56,9 @@ func TestRunReportsPartialWhenMonthlyCostsFailAfterHistory(t *testing.T) {
 		default:
 			return nil, errors.New("unexpected RPC")
 		}
-	})
-	t.Cleanup(func() { http.DefaultTransport = previousTransport })
+	})}
 
-	result, err := Run(Options{DataDir: dataDir})
+	result, err := runWithHTTPClient(Options{DataDir: dataDir}, httpClient)
 	if err != nil {
 		t.Fatalf("history should succeed when costs fail: %v", err)
 	}
@@ -91,8 +89,7 @@ func TestRunReportsPartialWhenCostsCannotBeSaved(t *testing.T) {
 	}
 	t.Setenv("OPENCODE_AUTH", "test-cookie")
 	t.Setenv("OPENCODE_WORKSPACE_ID", "wrk_test")
-	previousTransport := http.DefaultTransport
-	http.DefaultTransport = syncerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+	httpClient := &http.Client{Transport: syncerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch request.Header.Get("X-Server-Id") {
 		case opencode.FnUsageHistory:
 			return syncerRPCResponse([]opencode.UsageRecord{}), nil
@@ -101,10 +98,9 @@ func TestRunReportsPartialWhenCostsCannotBeSaved(t *testing.T) {
 		default:
 			return nil, errors.New("unexpected RPC")
 		}
-	})
-	t.Cleanup(func() { http.DefaultTransport = previousTransport })
+	})}
 
-	result, err := Run(Options{DataDir: dataDir})
+	result, err := runWithHTTPClient(Options{DataDir: dataDir}, httpClient)
 	if err != nil || result.Status != opencode.SyncPartial || len(result.Warnings) == 0 {
 		t.Fatalf("cost write failure = %+v, err = %v", result, err)
 	}
@@ -117,8 +113,7 @@ func TestRunAutomaticallySelectsSingleWorkspace(t *testing.T) {
 	t.Setenv("OPENCODE_AUTH", "test-cookie")
 	t.Setenv("OPENCODE_WORKSPACE_ID", "")
 	t.Setenv("OPENCODE_WORKSPACE", "")
-	previousTransport := http.DefaultTransport
-	http.DefaultTransport = syncerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+	httpClient := &http.Client{Transport: syncerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch request.Header.Get("X-Server-Id") {
 		case opencode.FnWorkspaces:
 			return syncerRPCResponse(map[string]any{
@@ -131,10 +126,9 @@ func TestRunAutomaticallySelectsSingleWorkspace(t *testing.T) {
 		default:
 			return nil, nil
 		}
-	})
-	t.Cleanup(func() { http.DefaultTransport = previousTransport })
+	})}
 
-	result, err := Run(Options{DataDir: t.TempDir()})
+	result, err := runWithHTTPClient(Options{DataDir: t.TempDir()}, httpClient)
 	if err != nil {
 		t.Fatalf("single workspace should be selected automatically: %v", err)
 	}
@@ -147,13 +141,11 @@ func TestRunFailsWhenNoWorkspaceAvailable(t *testing.T) {
 	t.Setenv("OPENCODE_AUTH", "test-cookie")
 	t.Setenv("OPENCODE_WORKSPACE_ID", "")
 	t.Setenv("OPENCODE_WORKSPACE", "")
-	previousTransport := http.DefaultTransport
-	http.DefaultTransport = syncerRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
+	httpClient := &http.Client{Transport: syncerRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return syncerRPCResponse(map[string]any{"workspaces": []any{}}), nil
-	})
-	t.Cleanup(func() { http.DefaultTransport = previousTransport })
+	})}
 
-	if _, err := Run(Options{DataDir: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "无法自动发现工作区") {
+	if _, err := runWithHTTPClient(Options{DataDir: t.TempDir()}, httpClient); err == nil || !strings.Contains(err.Error(), "无法自动发现工作区") {
 		t.Fatalf("missing workspace must fail explicitly, got %v", err)
 	}
 }
@@ -169,7 +161,7 @@ func TestRunReturnsConflictWhenDataDirectoryIsLocked(t *testing.T) {
 	t.Setenv("OPENCODE_AUTH", "test-cookie")
 	t.Setenv("OPENCODE_WORKSPACE_ID", "wrk_test")
 
-	if _, err := Run(Options{DataDir: dataDir}); err == nil || !strings.Contains(err.Error(), "同步进行中") {
+	if _, err := Run(Options{DataDir: dataDir}); err == nil || opencode.SyncErrorReasonOf(err) != opencode.SyncReasonConflict {
 		t.Fatalf("locked sync must return a conflict, got %v", err)
 	}
 }
@@ -178,18 +170,16 @@ func TestRunRequiresExplicitWorkspaceWhenMultiple(t *testing.T) {
 	t.Setenv("OPENCODE_AUTH", "test-cookie")
 	t.Setenv("OPENCODE_WORKSPACE_ID", "")
 	t.Setenv("OPENCODE_WORKSPACE", "")
-	previousTransport := http.DefaultTransport
-	http.DefaultTransport = syncerRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
+	httpClient := &http.Client{Transport: syncerRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return syncerRPCResponse(map[string]any{
 			"workspaces": []any{
 				map[string]any{"id": "wrk_one", "name": "One"},
 				map[string]any{"id": "wrk_two", "name": "Two"},
 			},
 		}), nil
-	})
-	t.Cleanup(func() { http.DefaultTransport = previousTransport })
+	})}
 
-	if _, err := Run(Options{DataDir: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "多个") {
+	if _, err := runWithHTTPClient(Options{DataDir: t.TempDir()}, httpClient); err == nil || !strings.Contains(err.Error(), "多个") {
 		t.Fatalf("multiple workspaces must require an explicit selection, got %v", err)
 	}
 }

@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"time"
 
 	"github.com/heihei0299/opencode-analyzer/internal/opencode"
 	"github.com/heihei0299/opencode-analyzer/internal/server"
@@ -53,8 +53,7 @@ func printHelp() {
 sync 选项:
   --auth <cookie>       OpenCode auth（也可用 OPENCODE_AUTH）
   --workspace <id>      工作区 ID（也可用 OPENCODE_WORKSPACE_ID）
-  --data-dir <dir>     本地数据目录（默认 data/opencode）
-  --pi-dir <dir>       本地 Pi session 目录（仅供审计）
+  --data-dir <dir>      本地数据目录（默认 data/opencode）
   --full                忽略增量游标，全量同步
   --limit <pages>       最多抓取页数
 
@@ -72,12 +71,15 @@ serve 选项:
 }
 
 func runSync(args []string) error {
+	return runSyncWithRunner(args, syncer.Run)
+}
+
+func runSyncWithRunner(args []string, runner func(syncer.Options) (opencode.SyncResult, error)) error {
 	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	auth := fs.String("auth", "", "OpenCode auth")
 	workspace := fs.String("workspace", "", "OpenCode workspace")
 	dataDir := fs.String("data-dir", "", "local data directory")
-	_ = fs.String("pi-dir", "", "Pi session directory")
 	full := fs.Bool("full", false, "full sync")
 	limit := fs.Int("limit", 0, "page limit")
 	if err := fs.Parse(args); err != nil {
@@ -86,7 +88,7 @@ func runSync(args []string) error {
 	if *limit < 0 {
 		return fmt.Errorf("无效 limit: %d（需为非负整数）", *limit)
 	}
-	result, err := syncer.Run(syncer.Options{
+	result, err := runner(syncer.Options{
 		Auth:      *auth,
 		Workspace: *workspace,
 		DataDir:   *dataDir,
@@ -123,29 +125,18 @@ func runExport(args []string) error {
 		return fmt.Errorf("未知格式: %s（支持 json/csv）", *format)
 	}
 
-	storage := opencode.NewStorage(resolveDataDir(*dataDir))
+	storage := opencode.NewStorage(opencode.ResolveDataDir(*dataDir, os.Getenv("OPENCODE_DATA_DIR")))
 	history, err := storage.LoadHistory()
 	if err != nil {
 		return fmt.Errorf("读取历史失败: %w", err)
 	}
 	records := history.Records
 	if *month != "" {
-		if len(*month) != 7 || (*month)[4] != '-' {
+		yearNumber, monthNumber, ok := opencode.ParseMonth(*month)
+		if !ok {
 			return fmt.Errorf("无效月份: %s（需为 YYYY-MM）", *month)
 		}
-		yearNumber, yearErr := strconv.Atoi((*month)[:4])
-		monthNumber, parseErr := strconv.Atoi((*month)[5:])
-		if yearErr != nil || yearNumber < 1000 || parseErr != nil || monthNumber < 1 || monthNumber > 12 {
-			return fmt.Errorf("无效月份: %s（需为 YYYY-MM）", *month)
-		}
-		prefix := *month
-		filtered := make([]opencode.UsageRecord, 0, len(records))
-		for _, record := range records {
-			if strings.HasPrefix(record.TimeCreated, prefix) {
-				filtered = append(filtered, record)
-			}
-		}
-		records = filtered
+		records = opencode.RecordsInMonth(records, yearNumber, monthNumber, time.Local)
 	}
 	var content []byte
 	if *format == "json" {
@@ -188,21 +179,11 @@ func runServe(args []string) error {
 	if *port < 0 || *port > 65535 {
 		return fmt.Errorf("无效端口: %d（需为 0-65535 的整数）", *port)
 	}
-	resolvedDataDir := resolveDataDir(*dataDir)
+	resolvedDataDir := opencode.ResolveDataDir(*dataDir, os.Getenv("OPENCODE_DATA_DIR"))
 	srv := server.NewServer(*piDir, server.Options{DataDir: resolvedDataDir})
 	addr := fmt.Sprintf("%s:%d", *host, *port)
 	fmt.Printf("OpenCode Analyzer WebUI: http://%s/\n数据目录: %s\n", addr, resolvedDataDir)
 	return srv.ListenAndServe(addr)
-}
-
-func resolveDataDir(value string) string {
-	if value = strings.TrimSpace(value); value != "" {
-		return value
-	}
-	if value = strings.TrimSpace(os.Getenv("OPENCODE_DATA_DIR")); value != "" {
-		return value
-	}
-	return "data/opencode"
 }
 
 func defaultPiDir() string {

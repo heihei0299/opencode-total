@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,12 +11,17 @@ import (
 	"testing"
 
 	"github.com/heihei0299/opencode-analyzer/internal/opencode"
+	"github.com/heihei0299/opencode-analyzer/internal/syncer"
 )
 
-type serverRoundTripFunc func(*http.Request) (*http.Response, error)
+func TestNewServerUsesResolvedDataDir(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("OPENCODE_DATA_DIR", dataDir)
 
-func (fn serverRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
-	return fn(request)
+	server := NewServer("", Options{})
+	if got := server.store.DataDir(); got != dataDir {
+		t.Fatalf("server data dir = %q, want %q", got, dataDir)
+	}
 }
 
 func TestListenAndServeRejectsNonLoopback(t *testing.T) {
@@ -77,7 +81,7 @@ func TestSecondConcurrentLockFailsAndReleaseAllowsNext(t *testing.T) {
 		}
 		result <- err
 	}()
-	if err := <-result; err == nil || !strings.Contains(err.Error(), "同步进行中") {
+	if err := <-result; err == nil || opencode.SyncErrorReasonOf(err) != opencode.SyncReasonConflict {
 		t.Fatalf("concurrent lock result = %v", err)
 	}
 
@@ -91,15 +95,10 @@ func TestSecondConcurrentLockFailsAndReleaseAllowsNext(t *testing.T) {
 }
 
 func TestSyncFailureIncludesFailedStatus(t *testing.T) {
-	t.Setenv("OPENCODE_AUTH", "test-cookie")
-	t.Setenv("OPENCODE_WORKSPACE_ID", "wrk_test")
-	previousTransport := http.DefaultTransport
-	http.DefaultTransport = serverRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader("failed")), Header: make(http.Header)}, nil
-	})
-	t.Cleanup(func() { http.DefaultTransport = previousTransport })
-
-	handler := NewServer("", Options{DataDir: t.TempDir()}).Handler()
+	runner := func(_ syncer.Options) (opencode.SyncResult, error) {
+		return opencode.SyncResult{Status: opencode.SyncFailed, Reason: opencode.SyncReasonServer}, errors.New("failed")
+	}
+	handler := newServerWithRunner("", runner, Options{DataDir: t.TempDir()}).Handler()
 	request := httptest.NewRequest(http.MethodPost, "/api/opencode/sync", strings.NewReader("{}"))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -109,40 +108,16 @@ func TestSyncFailureIncludesFailedStatus(t *testing.T) {
 }
 
 func TestSyncFailureIncludesProgress(t *testing.T) {
-	dataDir := t.TempDir()
-	storage := opencode.NewStorage(dataDir)
-	old := opencode.UsageRecord{
-		ID:          "usg_old",
-		TimeCreated: "2026-09-01T00:00:00Z",
-		Model:       "test-model",
-		Provider:    "test-provider",
+	lastSyncedTime := "2026-09-01T00:00:00Z"
+	runner := func(_ syncer.Options) (opencode.SyncResult, error) {
+		return opencode.SyncResult{
+			Status:         opencode.SyncFailed,
+			Reason:         opencode.SyncReasonHTTP,
+			Pages:          2,
+			LastSyncedTime: lastSyncedTime,
+		}, errors.New("failed")
 	}
-	if err := storage.SaveHistory([]opencode.UsageRecord{old}, &old.TimeCreated); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("OPENCODE_AUTH", "test-cookie")
-	t.Setenv("OPENCODE_WORKSPACE_ID", "wrk_test")
-	usageCalls := 0
-	previousTransport := http.DefaultTransport
-	http.DefaultTransport = serverRoundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if request.Header.Get("X-Server-Id") != opencode.FnUsageHistory {
-			return nil, errors.New("unexpected RPC")
-		}
-		usageCalls++
-		if usageCalls == 1 {
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body: io.NopCloser(strings.NewReader(opencode.EncodePayload([]any{[]opencode.UsageRecord{{
-					ID: "usg_new", TimeCreated: "2026-09-02T00:00:00Z", Model: "test-model", Provider: "test-provider",
-				}}}))),
-				Header: make(http.Header),
-			}, nil
-		}
-		return &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(strings.NewReader("failed")), Header: make(http.Header)}, nil
-	})
-	t.Cleanup(func() { http.DefaultTransport = previousTransport })
-
-	handler := NewServer("", Options{DataDir: dataDir}).Handler()
+	handler := newServerWithRunner("", runner, Options{DataDir: t.TempDir()}).Handler()
 	request := httptest.NewRequest(http.MethodPost, "/api/opencode/sync", strings.NewReader("{}"))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -151,7 +126,7 @@ func TestSyncFailureIncludesProgress(t *testing.T) {
 		!strings.Contains(body, `"status":"failed"`) ||
 		!strings.Contains(body, `"reason":"http"`) ||
 		!strings.Contains(body, `"pages":2`) ||
-		!strings.Contains(body, `"lastSyncedTime":"`+old.TimeCreated+`"`) ||
+		!strings.Contains(body, `"lastSyncedTime":"`+lastSyncedTime+`"`) ||
 		!strings.Contains(body, `"added":0`) ||
 		!strings.Contains(body, `"updated":0`) {
 		t.Fatalf("failed sync progress = %d %s", response.Code, body)

@@ -42,27 +42,6 @@ func retryableRPCError(err error) bool {
 	return reason == SyncReasonNetwork || reason == SyncReasonServer
 }
 
-func wrapRPCError(err error) error {
-	if err == nil || SyncErrorReasonOf(err) != SyncReasonInternal {
-		return err
-	}
-	message := err.Error()
-	switch {
-	case strings.HasPrefix(message, "网络超时:"):
-		return NewSyncError(SyncReasonNetwork, err)
-	case strings.HasPrefix(message, "认证失效:"):
-		return NewSyncError(SyncReasonAuthentication, err)
-	case strings.Contains(message, "HTTP 404"):
-		return NewSyncError(SyncReasonNotFound, err)
-	case strings.HasPrefix(message, "服务器错误:"):
-		return NewSyncError(SyncReasonServer, err)
-	case strings.HasPrefix(message, "请求失败:"):
-		return NewSyncError(SyncReasonHTTP, err)
-	default:
-		return NewSyncError(SyncReasonDecode, err)
-	}
-}
-
 func (c *Client) buildCookieHeader() string {
 	raw := c.auth
 	var cookieBase string
@@ -83,9 +62,8 @@ func (c *Client) buildCookieHeader() string {
 }
 
 func (c *Client) rpc(fnID string, args []any) (value any, err error) {
-	defer func() { err = wrapRPCError(err) }()
 	if c.auth == "" {
-		return nil, fmt.Errorf("认证失效: 缺少 OpenCode auth，请设置 OPENCODE_AUTH 或传入 --auth（凭证过期/缺失）")
+		return nil, NewSyncError(SyncReasonAuthentication, fmt.Errorf("认证失效: 缺少 OpenCode auth，请设置 OPENCODE_AUTH 或传入 --auth（凭证过期/缺失）"))
 	}
 
 	cookieHeader := c.buildCookieHeader()
@@ -98,7 +76,7 @@ func (c *Client) rpc(fnID string, args []any) (value any, err error) {
 
 		req, err := http.NewRequest("GET", getURL, nil)
 		if err != nil {
-			return nil, err
+			return nil, NewSyncError(SyncReasonHTTP, err)
 		}
 
 		instanceVal := "server-fn:1"
@@ -119,35 +97,39 @@ func (c *Client) rpc(fnID string, args []any) (value any, err error) {
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("网络超时: 请求 OpenCode 超时，请检查网络 — %v", err)
+			return nil, NewSyncError(SyncReasonNetwork, fmt.Errorf("网络超时: 请求 OpenCode 超时，请检查网络 — %v", err))
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode == 401 || resp.StatusCode == 403 {
-			return nil, fmt.Errorf("认证失效: OpenCode 凭证已过期或无效（HTTP %d），请刷新 auth cookie（凭证过期）", resp.StatusCode)
+			return nil, NewSyncError(SyncReasonAuthentication, fmt.Errorf("认证失效: OpenCode 凭证已过期或无效（HTTP %d），请刷新 auth cookie（凭证过期）", resp.StatusCode))
 		}
 		if resp.StatusCode == 404 {
-			return nil, fmt.Errorf("请求失败: OpenCode 返回 HTTP 404（Function ID 可能已随前端发版更换）")
+			return nil, NewSyncError(SyncReasonNotFound, fmt.Errorf("请求失败: OpenCode 返回 HTTP 404（Function ID 可能已随前端发版更换）"))
 		}
 		if resp.StatusCode >= 500 {
-			return nil, fmt.Errorf("服务器错误: OpenCode 服务异常（HTTP %d），请稍后重试", resp.StatusCode)
+			return nil, NewSyncError(SyncReasonServer, fmt.Errorf("服务器错误: OpenCode 服务异常（HTTP %d），请稍后重试", resp.StatusCode))
 		}
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("请求失败: OpenCode 返回 HTTP %d", resp.StatusCode)
+			return nil, NewSyncError(SyncReasonHTTP, fmt.Errorf("请求失败: OpenCode 返回 HTTP %d", resp.StatusCode))
 		}
 
 		bodyBytes, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return nil, fmt.Errorf("网络超时: 读取 OpenCode 响应失败 — %v", err)
+			return nil, NewSyncError(SyncReasonNetwork, fmt.Errorf("网络超时: 读取 OpenCode 响应失败 — %v", err))
 		}
-		return DecodeResponseText(string(bodyBytes))
+		value, err := DecodeResponseText(string(bodyBytes))
+		if err != nil {
+			return nil, NewSyncError(SyncReasonDecode, err)
+		}
+		return value, nil
 	}
 
 	// POST 模式
 	payload := EncodePayload(args)
 	req, err := http.NewRequest("POST", RPCURL, strings.NewReader(payload))
 	if err != nil {
-		return nil, err
+		return nil, NewSyncError(SyncReasonHTTP, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cookie", cookieHeader)
@@ -159,28 +141,32 @@ func (c *Client) rpc(fnID string, args []any) (value any, err error) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("网络超时: 请求 OpenCode 超时，请检查网络 — %v", err)
+		return nil, NewSyncError(SyncReasonNetwork, fmt.Errorf("网络超时: 请求 OpenCode 超时，请检查网络 — %v", err))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, fmt.Errorf("认证失效: OpenCode 凭证已过期或无效（HTTP %d），请刷新 auth cookie（凭证过期）", resp.StatusCode)
+		return nil, NewSyncError(SyncReasonAuthentication, fmt.Errorf("认证失效: OpenCode 凭证已过期或无效（HTTP %d），请刷新 auth cookie（凭证过期）", resp.StatusCode))
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("请求失败: OpenCode 返回 HTTP 404（Function ID 可能已随前端发版更换）")
+		return nil, NewSyncError(SyncReasonNotFound, fmt.Errorf("请求失败: OpenCode 返回 HTTP 404（Function ID 可能已随前端发版更换）"))
 	}
 	if resp.StatusCode >= http.StatusInternalServerError {
-		return nil, fmt.Errorf("服务器错误: OpenCode 服务异常（HTTP %d），请稍后重试", resp.StatusCode)
+		return nil, NewSyncError(SyncReasonServer, fmt.Errorf("服务器错误: OpenCode 服务异常（HTTP %d），请稍后重试", resp.StatusCode))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("请求失败: OpenCode 返回 HTTP %d", resp.StatusCode)
+		return nil, NewSyncError(SyncReasonHTTP, fmt.Errorf("请求失败: OpenCode 返回 HTTP %d", resp.StatusCode))
 	}
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("网络超时: 读取 OpenCode 响应失败 — %v", err)
+		return nil, NewSyncError(SyncReasonNetwork, fmt.Errorf("网络超时: 读取 OpenCode 响应失败 — %v", err))
 	}
-	return DecodeResponseText(string(bodyBytes))
+	value, err = DecodeResponseText(string(bodyBytes))
+	if err != nil {
+		return nil, NewSyncError(SyncReasonDecode, err)
+	}
+	return value, nil
 }
 
 func (c *Client) GetWorkspaces() ([]WorkspaceInfo, error) {
@@ -292,7 +278,10 @@ func (c *Client) GetUsageHistory(workspaceID string, page int) ([]UsageRecord, e
 		}
 		html, htmlErr := c.fetchUsageHTML(workspaceID)
 		if htmlErr == nil {
-			records := parseUsageHTML(html)
+			records, parseErr := parseUsageHTML(html)
+			if parseErr != nil {
+				return nil, parseErr
+			}
 			if len(records) > 0 {
 				return records, nil
 			}
@@ -401,23 +390,35 @@ func validateUsageRecords(records []UsageRecord) ([]UsageRecord, error) {
 func (c *Client) fetchUsageHTML(workspaceID string) (string, error) {
 	request, err := http.NewRequest(http.MethodGet, "https://opencode.ai/workspace/"+url.PathEscape(workspaceID)+"/usage", nil)
 	if err != nil {
-		return "", err
+		return "", NewSyncError(SyncReasonHTTP, err)
 	}
 	request.Header.Set("Cookie", c.buildCookieHeader())
 	request.Header.Set("User-Agent", "Mozilla/5.0")
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return "", err
+		return "", NewSyncError(SyncReasonNetwork, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTML fetch HTTP %d", response.StatusCode)
+		reason := SyncReasonHTTP
+		switch {
+		case response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden:
+			reason = SyncReasonAuthentication
+		case response.StatusCode == http.StatusNotFound:
+			reason = SyncReasonNotFound
+		case response.StatusCode >= http.StatusInternalServerError:
+			reason = SyncReasonServer
+		}
+		return "", NewSyncError(reason, fmt.Errorf("HTML fetch HTTP %d", response.StatusCode))
 	}
 	body, err := io.ReadAll(response.Body)
-	return string(body), err
+	if err != nil {
+		return "", NewSyncError(SyncReasonNetwork, err)
+	}
+	return string(body), nil
 }
 
-func parseUsageHTML(html string) []UsageRecord {
+func parseUsageHTML(html string) ([]UsageRecord, error) {
 	html = regexp.MustCompile(`new Date\("([^"]+)"\)`).ReplaceAllString(html, `"$1"`)
 	objects := regexp.MustCompile(`(?s)\{[^{}]*"?id"?\s*:\s*"usg_[^"]+"[^{}]*\}`).FindAllString(html, -1)
 	records := make([]UsageRecord, 0, len(objects))
@@ -459,9 +460,9 @@ func parseUsageHTML(html string) []UsageRecord {
 	sortUsage(records)
 	validated, err := validateUsageRecords(records)
 	if err != nil {
-		return []UsageRecord{}
+		return nil, NewSyncError(SyncReasonDecode, err)
 	}
-	return validated
+	return validated, nil
 }
 
 func jsString(object, key string) string {

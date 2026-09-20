@@ -24,12 +24,17 @@ type Options struct {
 }
 
 type Server struct {
-	piDir string
-	mux   *http.ServeMux
-	store *opencode.Storage
+	piDir   string
+	mux     *http.ServeMux
+	store   *opencode.Storage
+	runSync func(syncer.Options) (opencode.SyncResult, error)
 }
 
 func NewServer(piDir string, options ...Options) *Server {
+	return newServerWithRunner(piDir, syncer.Run, options...)
+}
+
+func newServerWithRunner(piDir string, runner func(syncer.Options) (opencode.SyncResult, error), options ...Options) *Server {
 	var opts Options
 	if len(options) > 0 {
 		opts = options[0]
@@ -37,14 +42,8 @@ func NewServer(piDir string, options ...Options) *Server {
 	if strings.TrimSpace(piDir) == "" {
 		piDir = strings.TrimSpace(os.Getenv("PI_SESSION_DIR"))
 	}
-	dataDir := strings.TrimSpace(opts.DataDir)
-	if dataDir == "" {
-		dataDir = strings.TrimSpace(os.Getenv("OPENCODE_DATA_DIR"))
-	}
-	if dataDir == "" {
-		dataDir = "data/opencode"
-	}
-	s := &Server{piDir: piDir, mux: http.NewServeMux(), store: opencode.NewStorage(dataDir)}
+	dataDir := opencode.ResolveDataDir(opts.DataDir, os.Getenv("OPENCODE_DATA_DIR"))
+	s := &Server{piDir: piDir, mux: http.NewServeMux(), store: opencode.NewStorage(dataDir), runSync: runner}
 	s.registerRoutes()
 	return s
 }
@@ -203,7 +202,7 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	if workspace == "" {
 		workspace = body.Workspace
 	}
-	result, err := syncer.Run(syncer.Options{
+	result, err := s.runSync(syncer.Options{
 		Auth:      body.Auth,
 		Workspace: workspace,
 		DataDir:   s.store.DataDir(),

@@ -66,10 +66,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 }
 
 func NewStorage(dataDir string) *Storage {
-	if strings.TrimSpace(dataDir) == "" {
-		dataDir = "data/opencode"
-	}
-	return &Storage{dataDir: dataDir}
+	return &Storage{dataDir: ResolveDataDir(dataDir, "")}
 }
 
 func (s *Storage) DataDir() string { return s.dataDir }
