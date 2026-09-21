@@ -542,6 +542,10 @@ type UsageClient interface {
 	GetUsageHistory(workspaceID string, page int) ([]UsageRecord, error)
 }
 
+type usageHistoryPageClient interface {
+	GetUsageHistoryPage(workspaceID string, page int) (UsageHistoryPage, error)
+}
+
 func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, error) {
 	if strings.TrimSpace(options.WorkspaceID) == "" {
 		return failedSyncResult(SyncReasonInvalidInput, fmt.Errorf("sync 需要 workspaceId"))
@@ -580,12 +584,21 @@ func (s *Storage) Sync(client UsageClient, options SyncOptions) (SyncResult, err
 	}
 	start := time.Now()
 	for page := 0; pages < maxPages; page++ {
-		batch, err := client.GetUsageHistory(options.WorkspaceID, page)
+		var fetched UsageHistoryPage
+		if pageClient, ok := client.(usageHistoryPageClient); ok {
+			fetched, err = pageClient.GetUsageHistoryPage(options.WorkspaceID, page)
+		} else {
+			var batch []UsageRecord
+			batch, err = client.GetUsageHistory(options.WorkspaceID, page)
+			fetched.Records = batch
+		}
 		pages++
 		if err != nil {
 			return failWithProgress(SyncReasonRemote, err)
 		}
-		if len(batch) == 0 {
+		batch := fetched.Records
+		if fetched.Complete || len(batch) == 0 {
+			collected = append(collected, batch...)
 			completed = true
 			break
 		}

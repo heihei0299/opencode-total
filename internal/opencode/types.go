@@ -2,6 +2,11 @@ package opencode
 
 import "errors"
 
+type UsageHistoryPage struct {
+	Records  []UsageRecord
+	Complete bool
+}
+
 type UsageRecord struct {
 	ID                 string  `json:"id"`
 	WorkspaceID        string  `json:"workspaceID"`

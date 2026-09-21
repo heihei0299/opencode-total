@@ -267,6 +267,11 @@ func decodeCostsResult(raw any) (CostsResult, error) {
 }
 
 func (c *Client) GetUsageHistory(workspaceID string, page int) ([]UsageRecord, error) {
+	result, err := c.GetUsageHistoryPage(workspaceID, page)
+	return result.Records, err
+}
+
+func (c *Client) GetUsageHistoryPage(workspaceID string, page int) (UsageHistoryPage, error) {
 	raw, err := c.rpc(FnUsageHistory, []any{workspaceID, page})
 	if retryableRPCError(err) {
 		time.Sleep(500 * time.Millisecond)
@@ -274,25 +279,25 @@ func (c *Client) GetUsageHistory(workspaceID string, page int) ([]UsageRecord, e
 	}
 	if err != nil {
 		if page != 0 || SyncErrorReasonOf(err) == SyncReasonDecode {
-			return nil, err
+			return UsageHistoryPage{}, err
 		}
 		html, htmlErr := c.fetchUsageHTML(workspaceID)
 		if htmlErr == nil {
 			records, parseErr := parseUsageHTML(html)
 			if parseErr != nil {
-				return nil, parseErr
+				return UsageHistoryPage{}, parseErr
 			}
 			if len(records) > 0 {
-				return records, nil
+				return UsageHistoryPage{Records: records, Complete: true}, nil
 			}
 		}
-		return nil, err
+		return UsageHistoryPage{}, err
 	}
 	records, err := decodeUsageRecords(raw)
 	if err != nil {
-		return nil, NewSyncError(SyncReasonDecode, err)
+		return UsageHistoryPage{}, NewSyncError(SyncReasonDecode, err)
 	}
-	return records, nil
+	return UsageHistoryPage{Records: records}, nil
 }
 
 func decodeUsageRecords(raw any) ([]UsageRecord, error) {

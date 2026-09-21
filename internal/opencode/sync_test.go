@@ -3,6 +3,8 @@ package opencode
 import (
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +33,39 @@ type endlessUsageClient struct {
 func (client *endlessUsageClient) GetUsageHistory(_ string, _ int) ([]UsageRecord, error) {
 	client.calls++
 	return []UsageRecord{{ID: "usg_page", TimeCreated: "2026-09-01T00:00:00Z", Model: "test-model", Provider: "test-provider"}}, nil
+}
+
+func TestStorageSyncTreatsHTMLFallbackAsCompleteSource(t *testing.T) {
+	rpcCalls, htmlCalls := 0, 0
+	html := `<script>
+$R[1]={id:"usg_html_1",workspaceID:"wrk_test",timeCreated:new Date("2026-09-02T00:00:00Z"),model:"m1",provider:"p1"}
+$R[2]={id:"usg_html_2",workspaceID:"wrk_test",timeCreated:new Date("2026-09-01T00:00:00Z"),model:"m2",provider:"p2"}
+</script>`
+	client := NewClientWithHTTPClient("test-cookie", &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/_server":
+			rpcCalls++
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("not found")), Header: make(http.Header)}, nil
+		case "/workspace/wrk_test/usage":
+			htmlCalls++
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(html)), Header: make(http.Header)}, nil
+		default:
+			return nil, errors.New("unexpected request: " + request.URL.Path)
+		}
+	})})
+
+	storage := NewStorage(t.TempDir())
+	result, err := storage.Sync(client, SyncOptions{WorkspaceID: "wrk_test"})
+	if err != nil || result.Status != SyncComplete {
+		t.Fatalf("HTML fallback sync = %+v, err = %v", result, err)
+	}
+	if result.Pages != 1 || result.Added != 2 || rpcCalls != 1 || htmlCalls != 1 {
+		t.Fatalf("HTML fallback pagination = %+v, rpc calls = %d, html calls = %d", result, rpcCalls, htmlCalls)
+	}
+	history, err := storage.LoadHistory()
+	if err != nil || len(history.Records) != 2 {
+		t.Fatalf("HTML fallback history = %+v, err = %v", history, err)
+	}
 }
 
 func TestStorageSyncPreservesSnapshotOnLaterPageError(t *testing.T) {
